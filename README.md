@@ -89,7 +89,7 @@ sudo apt-get install postgresql postgresql-contrib
 Create a `.env` file in the root directory with:
 ```env
 # Database Configuration
-DATABASE_URL=postgresql://postgres:taha@localhost:5432/fastapi_db
+DATABASE_URL=postgresql://postgres:admin@localhost:5432/fastapi_db
 
 # Security Settings
 SECRET_KEY=your-secret-key-here
