@@ -72,7 +72,17 @@ source venv/bin/activate
 
 3. **Install dependencies**
 ```bash
+sudo apt-get update -y
+sudo apt-get install software-properties-common -y
+sudo add-apt-repository ppa:deadsnakes/ppa -y
+sudo apt-get update -y
+sudo apt-get install python3.9 python3.9-venv python3.9-distutils -y
+sudo apt-get update && sudo apt-get install portaudio19-dev python3-dev
+sudo apt-get install python3-pyaudio
 pip install -r requirements.txt
+sudo apt-get install postgresql-client-common
+sudo apt-get install postgresql-client
+sudo apt-get install postgresql postgresql-contrib
 ```
 
 4. **Set up environment variables**
@@ -103,6 +113,7 @@ HUGGINGFACE_TOKEN=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
 ```bash
 # Create database
 createdb fastapi_db
+sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'admin';"
 
 # Run migrations
 alembic upgrade head
