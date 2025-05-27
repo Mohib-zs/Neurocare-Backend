@@ -55,7 +55,7 @@ NeuroCare-Backend/
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/Tahadevv/NeuroCare-Backend.git
+git clone https://github.com/Mohib-zs/NeuroCare-Backend.git
 cd NeuroCare-Backend
 ```
 
