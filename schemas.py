@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, constr, Field
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Any
 from datetime import datetime, date
 from enum import Enum
 
@@ -345,20 +345,85 @@ class ThemesAnalysis(BaseModel):
     main_themes: List[str]
     potential_concerns: Dict[str, int]
 
-class MentalHealthAssessment(BaseModel):
-    risk_level: int
-    areas_of_concern: List[str]
-    emotional_state: Dict[str, Union[str, float]]
-    coping_strategies: List[str]
-    professional_help: Dict[str, Union[bool, List[str], str]]
-    immediate_support: List[str]
+class MentalHealthAssessmentBase(BaseModel):
+    depression_score: float
+    anxiety_score: float
+    stress_score: float
+    sleep_quality_score: float
+    emotional_regulation: float
+    social_connection: float
+    resilience_score: float
+    mindfulness_score: float
+    cognitive_metrics: Dict[str, Any]
+    activity_data: Dict[str, Any]
+    social_data: Dict[str, Any]
+    sleep_data: Dict[str, Any]
+    risk_factors: List[str]
 
-class PersonalizedInterventions(BaseModel):
-    daily_practices: List[str]
-    weekly_goals: List[str]
-    crisis_plan: Dict[str, List[str]]
-    reflection_prompts: List[str]
-    progress_metrics: List[str]
+class MentalHealthAssessmentCreate(MentalHealthAssessmentBase):
+    pass
+
+class MentalHealthAssessmentResponse(MentalHealthAssessmentBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+    cognitive_function: Dict[str, Any]
+    activity_level: float
+    social_engagement: float
+    sleep_patterns: Dict[str, Any]
+    suicide_risk: float
+    self_harm_risk: float
+    risk_factors: List[str]
+    protective_factors: List[str]
+    treatment_adherence: float
+    medication_compliance: float
+    therapy_attendance: float
+    progress_metrics: Dict[str, Any]
+    ai_insights: Dict[str, Any]
+    recommended_interventions: List[Dict[str, Any]]
+    predicted_outcomes: Dict[str, Any]
+
+    class Config:
+        orm_mode = True
+
+class MentalHealthInterventionBase(BaseModel):
+    intervention_type: str
+    description: str
+    goals: List[str]
+    expected_outcomes: Dict[str, Any]
+    ai_recommendations: Dict[str, Any]
+    personalized_approach: Dict[str, Any]
+
+class MentalHealthInterventionCreate(MentalHealthInterventionBase):
+    pass
+
+class MentalHealthInterventionResponse(MentalHealthInterventionBase):
+    id: int
+    assessment_id: int
+    timestamp: datetime
+    progress_metrics: Dict[str, Any]
+    adherence_score: float
+    effectiveness_score: float
+
+    class Config:
+        orm_mode = True
+
+class InterventionProgressCreate(BaseModel):
+    intervention_id: int
+    progress_metrics: Dict[str, Any]
+    adherence_score: float
+    effectiveness_score: float
+
+class InterventionProgressResponse(BaseModel):
+    intervention: MentalHealthInterventionResponse
+    ai_feedback: Dict[str, Any]
+    next_steps: List[Dict[str, Any]]
+
+class MentalHealthTrendsResponse(BaseModel):
+    trends: Dict[str, Dict[str, Any]]
+    insights: Dict[str, Any]
+    risk_level: str
+    recommendations: List[Dict[str, Any]]
 
 class TextAnalysisResponse(BaseModel):
     analysis_id: int
@@ -366,8 +431,186 @@ class TextAnalysisResponse(BaseModel):
     sentiment_analysis: SentimentAnalysis
     linguistic_analysis: LinguisticAnalysis
     themes_analysis: ThemesAnalysis
-    mental_health_assessment: MentalHealthAssessment
-    personalized_interventions: PersonalizedInterventions
+    mental_health_assessment: MentalHealthAssessmentResponse
+    personalized_interventions: List[Dict[str, Any]]
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+# Stress Tracking Schemas
+class StressTrackingBase(BaseModel):
+    stress_level: float
+    source: str
+    context: str
+    location: Optional[str] = None
+    facial_analysis: Optional[Dict[str, Any]] = None
+    voice_analysis: Optional[Dict[str, Any]] = None
+    text_analysis: Optional[Dict[str, Any]] = None
+
+class StressTrackingCreate(StressTrackingBase):
+    pass
+
+class StressTrackingResponse(StressTrackingBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+# Meditation Session Schemas
+class MeditationSessionBase(BaseModel):
+    session_type: str
+    duration: int
+    script: str
+    audio_path: Optional[str] = None
+    completion_status: Optional[float] = None
+    user_feedback: Optional[Dict[str, Any]] = None
+    effectiveness_score: Optional[float] = None
+
+class MeditationSessionCreate(MeditationSessionBase):
+    pass
+
+class MeditationSessionResponse(MeditationSessionBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+# Mood Journal Schemas
+class MoodJournalBase(BaseModel):
+    text_content: Optional[str] = None
+    audio_path: Optional[str] = None
+    facial_emotions: Optional[Dict[str, Any]] = None
+    mood_score: float
+    dominant_emotions: List[str]
+    sentiment_analysis: Dict[str, Any]
+    themes: List[str]
+
+class MoodJournalCreate(MoodJournalBase):
+    pass
+
+class MoodJournalResponse(MoodJournalBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+# Cognitive Game Schemas
+class CognitiveGameBase(BaseModel):
+    game_type: str
+    difficulty_level: int
+    duration: int
+    score: float
+    accuracy: float
+    reaction_time: float
+    completion_status: bool
+    attention_score: float
+    memory_score: float
+    problem_solving_score: float
+
+class CognitiveGameCreate(CognitiveGameBase):
+    pass
+
+class CognitiveGameResponse(CognitiveGameBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+# Sleep Record Schemas
+class SleepRecordBase(BaseModel):
+    date: date
+    sleep_duration: float
+    sleep_quality: float
+    deep_sleep_duration: float
+    rem_sleep_duration: float
+    room_temperature: Optional[float] = None
+    noise_level: Optional[float] = None
+    light_level: Optional[float] = None
+    bedtime_routine: Dict[str, Any]
+    wake_up_time: datetime
+    sleep_onset_time: datetime
+    sleep_analysis: Dict[str, Any]
+    recommendations: List[str]
+
+class SleepRecordCreate(SleepRecordBase):
+    pass
+
+class SleepRecordResponse(SleepRecordBase):
+    id: int
+    user_id: int
+
+    class Config:
+        orm_mode = True
+
+# Therapy Session Schemas
+class TherapySessionBase(BaseModel):
+    session_type: str
+    duration: int
+    topic: str
+    messages: List[Dict[str, Any]]
+    sentiment_analysis: Dict[str, Any]
+    key_concerns: List[str]
+    session_summary: str
+    action_items: List[str]
+    follow_up_needed: bool
+    escalation_level: int
+
+class TherapySessionCreate(TherapySessionBase):
+    pass
+
+class TherapySessionResponse(TherapySessionBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+# Emergency Contact Schemas
+class EmergencyContactBase(BaseModel):
+    name: str
+    relationship: str
+    phone_number: str
+    email: Optional[str] = None
+    is_primary: bool = False
+    notify_on_high_stress: bool = True
+    notify_on_crisis: bool = True
+    notify_on_missed_medication: bool = True
+
+class EmergencyContactCreate(EmergencyContactBase):
+    pass
+
+class EmergencyContactResponse(EmergencyContactBase):
+    id: int
+    user_id: int
+
+    class Config:
+        orm_mode = True
+
+# Emergency Alert Schemas
+class EmergencyAlertBase(BaseModel):
+    alert_type: str
+    severity: int
+    description: str
+    responded_by: Optional[str] = None
+    response_time: Optional[datetime] = None
+    resolution: Optional[str] = None
+
+class EmergencyAlertCreate(EmergencyAlertBase):
+    pass
+
+class EmergencyAlertResponse(EmergencyAlertBase):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True 

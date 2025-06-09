@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import models, schemas
 from security import get_password_hash
 
@@ -184,4 +184,308 @@ def update_user(db: Session, user_id: int, user_update: schemas.UserUpdate):
     
     db.commit()
     db.refresh(db_user)
-    return db_user 
+    return db_user
+
+def create_mental_health_assessment(db: Session, user_id: int, assessment_data: dict):
+    """Create a new mental health assessment."""
+    db_assessment = models.MentalHealthAssessment(
+        user_id=user_id,
+        **assessment_data
+    )
+    db.add(db_assessment)
+    db.commit()
+    db.refresh(db_assessment)
+    return db_assessment
+
+def get_mental_health_assessments(
+    db: Session,
+    user_id: int,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get mental health assessments for a user."""
+    return db.query(models.MentalHealthAssessment)\
+        .filter(models.MentalHealthAssessment.user_id == user_id)\
+        .order_by(models.MentalHealthAssessment.timestamp.desc())\
+        .offset(skip)\
+        .limit(limit)\
+        .all()
+
+def get_mental_health_assessment(db: Session, assessment_id: int):
+    """Get a specific mental health assessment."""
+    return db.query(models.MentalHealthAssessment)\
+        .filter(models.MentalHealthAssessment.id == assessment_id)\
+        .first()
+
+def create_mental_health_intervention(
+    db: Session,
+    assessment_id: int,
+    intervention_data: dict
+):
+    """Create a new mental health intervention."""
+    db_intervention = models.MentalHealthIntervention(
+        assessment_id=assessment_id,
+        **intervention_data
+    )
+    db.add(db_intervention)
+    db.commit()
+    db.refresh(db_intervention)
+    return db_intervention
+
+def get_mental_health_interventions(
+    db: Session,
+    assessment_id: int,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get interventions for a specific assessment."""
+    return db.query(models.MentalHealthIntervention)\
+        .filter(models.MentalHealthIntervention.assessment_id == assessment_id)\
+        .order_by(models.MentalHealthIntervention.timestamp.desc())\
+        .offset(skip)\
+        .limit(limit)\
+        .all()
+
+def create_intervention_progress(
+    db: Session,
+    intervention_id: int,
+    progress_data: dict
+):
+    """Create a new progress update for an intervention."""
+    db_progress = models.InterventionProgress(
+        intervention_id=intervention_id,
+        **progress_data
+    )
+    db.add(db_progress)
+    db.commit()
+    db.refresh(db_progress)
+    return db_progress
+
+def get_intervention_progress(
+    db: Session,
+    intervention_id: int,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get progress updates for a specific intervention."""
+    return db.query(models.InterventionProgress)\
+        .filter(models.InterventionProgress.intervention_id == intervention_id)\
+        .order_by(models.InterventionProgress.timestamp.desc())\
+        .offset(skip)\
+        .limit(limit)\
+        .all()
+
+def calculate_assessment_trends(
+    db: Session,
+    user_id: int,
+    days: int = 30
+):
+    """Calculate trends in mental health assessments over time."""
+    start_date = datetime.utcnow() - timedelta(days=days)
+    assessments = db.query(models.MentalHealthAssessment)\
+        .filter(
+            models.MentalHealthAssessment.user_id == user_id,
+            models.MentalHealthAssessment.timestamp >= start_date
+        )\
+        .order_by(models.MentalHealthAssessment.timestamp.asc())\
+        .all()
+    
+    if not assessments:
+        return None
+    
+    trends = {
+        "depression": [],
+        "anxiety": [],
+        "stress": [],
+        "sleep_quality": [],
+        "emotional_regulation": [],
+        "social_connection": [],
+        "resilience": [],
+        "mindfulness": []
+    }
+    
+    for assessment in assessments:
+        trends["depression"].append(assessment.depression_score)
+        trends["anxiety"].append(assessment.anxiety_score)
+        trends["stress"].append(assessment.stress_score)
+        trends["sleep_quality"].append(assessment.sleep_quality_score)
+        trends["emotional_regulation"].append(assessment.emotional_regulation)
+        trends["social_connection"].append(assessment.social_connection)
+        trends["resilience"].append(assessment.resilience_score)
+        trends["mindfulness"].append(assessment.mindfulness_score)
+    
+    return trends
+
+# Stress Tracking CRUD
+def create_stress_tracking(db: Session, user_id: int, stress_data: Dict[str, Any]) -> models.StressTracking:
+    db_stress = models.StressTracking(
+        user_id=user_id,
+        **stress_data
+    )
+    db.add(db_stress)
+    db.commit()
+    db.refresh(db_stress)
+    return db_stress
+
+def get_stress_tracking(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.StressTracking]:
+    return db.query(models.StressTracking).filter(
+        models.StressTracking.user_id == user_id
+    ).order_by(
+        models.StressTracking.timestamp.desc()
+    ).offset(skip).limit(limit).all()
+
+# Meditation Session CRUD
+def create_meditation_session(db: Session, user_id: int, session_data: Dict[str, Any]) -> models.MeditationSession:
+    db_session = models.MeditationSession(
+        user_id=user_id,
+        **session_data
+    )
+    db.add(db_session)
+    db.commit()
+    db.refresh(db_session)
+    return db_session
+
+def get_meditation_sessions(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.MeditationSession]:
+    return db.query(models.MeditationSession).filter(
+        models.MeditationSession.user_id == user_id
+    ).order_by(
+        models.MeditationSession.timestamp.desc()
+    ).offset(skip).limit(limit).all()
+
+# Mood Journal CRUD
+def create_mood_journal(db: Session, user_id: int, journal_data: Dict[str, Any]) -> models.MoodJournal:
+    db_journal = models.MoodJournal(
+        user_id=user_id,
+        **journal_data
+    )
+    db.add(db_journal)
+    db.commit()
+    db.refresh(db_journal)
+    return db_journal
+
+def get_mood_journals(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.MoodJournal]:
+    return db.query(models.MoodJournal).filter(
+        models.MoodJournal.user_id == user_id
+    ).order_by(
+        models.MoodJournal.timestamp.desc()
+    ).offset(skip).limit(limit).all()
+
+# Cognitive Game CRUD
+def create_cognitive_game(db: Session, user_id: int, game_data: Dict[str, Any]) -> models.CognitiveGame:
+    db_game = models.CognitiveGame(
+        user_id=user_id,
+        **game_data
+    )
+    db.add(db_game)
+    db.commit()
+    db.refresh(db_game)
+    return db_game
+
+def get_cognitive_games(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.CognitiveGame]:
+    return db.query(models.CognitiveGame).filter(
+        models.CognitiveGame.user_id == user_id
+    ).order_by(
+        models.CognitiveGame.timestamp.desc()
+    ).offset(skip).limit(limit).all()
+
+# Sleep Record CRUD
+def create_sleep_record(db: Session, user_id: int, sleep_data: Dict[str, Any]) -> models.SleepRecord:
+    db_sleep = models.SleepRecord(
+        user_id=user_id,
+        **sleep_data
+    )
+    db.add(db_sleep)
+    db.commit()
+    db.refresh(db_sleep)
+    return db_sleep
+
+def get_sleep_records(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.SleepRecord]:
+    return db.query(models.SleepRecord).filter(
+        models.SleepRecord.user_id == user_id
+    ).order_by(
+        models.SleepRecord.date.desc()
+    ).offset(skip).limit(limit).all()
+
+# Therapy Session CRUD
+def create_therapy_session(db: Session, user_id: int, session_data: Dict[str, Any]) -> models.TherapySession:
+    db_session = models.TherapySession(
+        user_id=user_id,
+        **session_data
+    )
+    db.add(db_session)
+    db.commit()
+    db.refresh(db_session)
+    return db_session
+
+def get_therapy_sessions(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.TherapySession]:
+    return db.query(models.TherapySession).filter(
+        models.TherapySession.user_id == user_id
+    ).order_by(
+        models.TherapySession.timestamp.desc()
+    ).offset(skip).limit(limit).all()
+
+# Emergency Contact CRUD
+def create_emergency_contact(db: Session, user_id: int, contact_data: Dict[str, Any]) -> models.EmergencyContact:
+    db_contact = models.EmergencyContact(
+        user_id=user_id,
+        **contact_data
+    )
+    db.add(db_contact)
+    db.commit()
+    db.refresh(db_contact)
+    return db_contact
+
+def get_emergency_contacts(db: Session, user_id: int) -> List[models.EmergencyContact]:
+    return db.query(models.EmergencyContact).filter(
+        models.EmergencyContact.user_id == user_id
+    ).all()
+
+def update_emergency_contact(db: Session, contact_id: int, contact_data: Dict[str, Any]) -> models.EmergencyContact:
+    db_contact = db.query(models.EmergencyContact).filter(
+        models.EmergencyContact.id == contact_id
+    ).first()
+    if db_contact:
+        for key, value in contact_data.items():
+            setattr(db_contact, key, value)
+        db.commit()
+        db.refresh(db_contact)
+    return db_contact
+
+def delete_emergency_contact(db: Session, contact_id: int) -> bool:
+    db_contact = db.query(models.EmergencyContact).filter(
+        models.EmergencyContact.id == contact_id
+    ).first()
+    if db_contact:
+        db.delete(db_contact)
+        db.commit()
+        return True
+    return False
+
+# Emergency Alert CRUD
+def create_emergency_alert(db: Session, user_id: int, alert_data: Dict[str, Any]) -> models.EmergencyAlert:
+    db_alert = models.EmergencyAlert(
+        user_id=user_id,
+        **alert_data
+    )
+    db.add(db_alert)
+    db.commit()
+    db.refresh(db_alert)
+    return db_alert
+
+def get_emergency_alerts(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.EmergencyAlert]:
+    return db.query(models.EmergencyAlert).filter(
+        models.EmergencyAlert.user_id == user_id
+    ).order_by(
+        models.EmergencyAlert.timestamp.desc()
+    ).offset(skip).limit(limit).all()
+
+def update_emergency_alert(db: Session, alert_id: int, alert_data: Dict[str, Any]) -> models.EmergencyAlert:
+    db_alert = db.query(models.EmergencyAlert).filter(
+        models.EmergencyAlert.id == alert_id
+    ).first()
+    if db_alert:
+        for key, value in alert_data.items():
+            setattr(db_alert, key, value)
+        db.commit()
+        db.refresh(db_alert)
+    return db_alert 

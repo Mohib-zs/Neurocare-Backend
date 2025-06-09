@@ -1,31 +1,67 @@
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Body, Path
-from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+# Standard library imports
+import os
+import json
+import logging
+import uuid
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
-from database import SessionLocal, engine, get_db
+
+# Third-party imports
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Body, Path
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from dotenv import load_dotenv
+try:
+    import jwt
+except ImportError:
+    raise ImportError(
+        "PyJWT package is required. Please install it using: pip install PyJWT"
+    )
+
+# Local application imports
 import models
 import schemas
-from fastapi.middleware.cors import CORSMiddleware
-from datetime import timedelta, datetime
-from security import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    get_current_user,
-    get_current_active_user,
-    authenticate_user,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+import crud
+import ai_utils
+from models import (
+    Base, User, UserProfile, EmotionAnalysis, EmotionHistory, 
+    EmotionSession, RealtimeFrame, AudioAnalysis, MentalHealthScore, 
+    TextAnalysis, TextAnalysisIntervention, MentalHealthAssessment, 
+    MentalHealthIntervention, InterventionProgress
 )
-import os
-from dotenv import load_dotenv
-import secrets
+from database import SessionLocal, engine
+from schemas import (
+    UserCreate, UserUpdate, UserLogin, Token, TokenData, User, 
+    UserProfileCreate, UserProfile, EmotionAnalysisCreate, EmotionAnalysis, 
+    EmotionHistoryCreate, EmotionHistory, EmotionResponse, SessionType, 
+    RealtimeFrameCreate, RealtimeFrame, EmotionSessionCreate, EmotionSession, 
+    RealtimeAnalysisResponse, EmotionSummary, SessionSummaryResponse, 
+    VideoAnalysisResult, AudioAnalysisResponse, EmotionTrendsResponse, 
+    MentalHealthTrendsResponse, WellnessReportResponse, TextAnalysisRequest, 
+    TextAnalysisResponse, MentalHealthAssessmentCreate, MentalHealthAssessmentResponse, 
+    MentalHealthInterventionCreate, MentalHealthInterventionResponse, 
+    InterventionProgressCreate, InterventionProgressResponse, StressTrackingResponse, 
+    StressTrackingCreate, MeditationSessionResponse, MeditationSessionCreate, 
+    MoodJournalResponse, MoodJournalCreate, CognitiveGameResponse, 
+    CognitiveGameCreate, SleepRecordResponse, SleepRecordCreate, 
+    TherapySessionResponse, TherapySessionCreate, EmergencyContactResponse, 
+    EmergencyContactCreate, EmergencyAlertResponse, EmergencyAlertCreate
+)
+from security import (
+    verify_password, get_password_hash, create_access_token,
+    get_current_user, get_current_active_user
+)
 from emotion_utils import (
     save_uploaded_image,
     analyze_emotions,
     generate_mental_health_intervention,
     process_base64_image
 )
-from fastapi.responses import JSONResponse
 from video_emotion_utils import (
     save_uploaded_video,
     extract_audio,
@@ -36,8 +72,6 @@ from video_emotion_utils import (
     generate_comprehensive_analysis,
     generate_mental_health_intervention
 )
-import logging
-from sqlalchemy import func
 from audio_analysis_utils import (
     save_audio_file,
     extract_audio_features,
@@ -47,8 +81,6 @@ from audio_analysis_utils import (
     generate_recommendations,
     generate_mental_health_scores
 )
-import uuid
-import crud
 from text_analysis_utils import (
     analyze_text_sentiment,
     analyze_linguistic_patterns,
@@ -57,15 +89,40 @@ from text_analysis_utils import (
     generate_personalized_interventions
 )
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# JWT Configuration
+ACCESS_TOKEN_EXPIRE_MINUTES = 30  # Token expires in 30 minutes
+
+# Load environment variables
 load_dotenv()
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
 
+# Initialize FastAPI app
 app = FastAPI(
-    title="Mental Health Analysis API",
-    description="API for analyzing mental health through facial expressions, voice, and video analysis",
-    version="1.0.0"
+    title="NeuroCare API",
+    description="""
+    State-of-the-art mental health analysis and intervention system.
+    
+    ## Features
+    * Real-time stress tracking and analysis
+    * AI-powered meditation and breathing exercises
+    * Comprehensive mood journaling with multi-modal analysis
+    * Cognitive games for mental fitness
+    * Advanced sleep coaching and analysis
+    * AI therapy chatbot with personalized interventions
+    * Emergency SOS system with contact management
+    
+    ## Authentication
+    All endpoints require authentication using JWT tokens.
+    """,
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None
 )
 
 # CORS middleware configuration
@@ -77,8 +134,8 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# OAuth2 scheme for token authentication
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+# APIKeyHeader for Swagger UI
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 # Dependency to get database session
 def get_db():
@@ -88,25 +145,38 @@ def get_db():
     finally:
         db.close()
 
+# Authentication function
+def authenticate_user(db: Session, email: str, password: str):
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        return False
+    if not verify_password(password, user.hashed_password):
+        return False
+    return user
+
 # Get current user from token
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def get_current_user(token: str = Depends(api_key_header), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if token is None or not token.startswith("Bearer "):
+        raise credentials_exception
+    token = token.replace("Bearer ", "")
     try:
         payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=[os.getenv("ALGORITHM")])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
-    except JWTError:
+    except jwt.InvalidTokenError:
         raise credentials_exception
-    
     user = db.query(models.User).filter(models.User.email == email).first()
     if user is None:
         raise credentials_exception
     return user
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 @app.get("/")
 async def root():
@@ -418,30 +488,38 @@ async def analyze_image_emotion(
         intervention = generate_intervention(emotions, dominant_emotion)
 
         # Create analysis record
-        analysis = models.EmotionAnalysis(
+        db_analysis = models.EmotionAnalysis(
             user_id=current_user.id,
+            session_id=session_id,
             image_path=image_path,
             emotions=emotions,
             dominant_emotion=dominant_emotion,
-            intervention=intervention
+            confidence_score=confidence_score,
+            intervention=intervention,
+            analysis_type="facial"  # Set analysis type to 'facial'
         )
-        db.add(analysis)
+        db.add(db_analysis)
+        db.commit()  # Commit first so IDs are generated
+        db.refresh(db_analysis)  # Refresh to get the ID
 
-        # Create emotion history records
+        history_records = []
         for emotion, score in emotions.items():
             history = models.EmotionHistory(
                 user_id=current_user.id,
-                emotion_analysis_id=analysis.id,
+                emotion_analysis_id=db_analysis.id,  # Now analysis.id is set
                 emotion_type=emotion,
                 intensity=score
             )
             db.add(history)
+            history_records.append(history)
 
-        db.commit()
+        db.commit()  # Commit to save history records
+        for h in history_records:
+            db.refresh(h)  # Refresh to get IDs
 
         return {
-            "analysis": analysis,
-            "history": [history],
+            "analysis": db_analysis,
+            "history": history_records,
             "intervention": intervention
         }
 
@@ -470,30 +548,38 @@ async def analyze_base64_emotion(
         intervention = generate_intervention(emotions, dominant_emotion)
 
         # Create analysis record
-        analysis = models.EmotionAnalysis(
+        db_analysis = models.EmotionAnalysis(
             user_id=current_user.id,
+            session_id=session_id,
             image_path=image_path,
             emotions=emotions,
             dominant_emotion=dominant_emotion,
-            intervention=intervention
+            confidence_score=confidence_score,
+            intervention=intervention,
+            analysis_type="facial"  # Set analysis type to 'facial'
         )
-        db.add(analysis)
+        db.add(db_analysis)
+        db.commit()  # Commit first so IDs are generated
+        db.refresh(db_analysis)  # Refresh to get the ID
 
-        # Create emotion history records
+        history_records = []
         for emotion, score in emotions.items():
             history = models.EmotionHistory(
                 user_id=current_user.id,
-                emotion_analysis_id=analysis.id,
+                emotion_analysis_id=db_analysis.id,  # Now analysis.id is set
                 emotion_type=emotion,
                 intensity=score
             )
             db.add(history)
+            history_records.append(history)
 
-        db.commit()
+        db.commit()  # Commit to save history records
+        for h in history_records:
+            db.refresh(h)  # Refresh to get IDs
 
         return {
-            "analysis": analysis,
-            "history": [history],
+            "analysis": db_analysis,
+            "history": history_records,
             "intervention": intervention
         }
 
@@ -633,38 +719,12 @@ async def analyze_audio(
         db_audio_analysis = models.AudioAnalysis(
             user_id=current_user.id,
             session_id=session_id,
-            # Audio Features
-            pitch_mean=features["pitch_mean"],
-            pitch_std=features["pitch_std"],
-            energy=features["energy"],
-            tempo=features["tempo"],
-            speech_rate=features["speech_rate"],
-            pause_ratio=features["pause_ratio"],
-            voice_quality=features["voice_quality"],
-            # Emotion Analysis
-            arousal=emotion_analysis["arousal"],
-            valence=emotion_analysis["valence"],
+            image_path=None,  # No image for audio analysis
+            emotions=emotion_analysis,
             dominant_emotion=emotion_analysis["dominant_emotion"],
             confidence_score=emotion_analysis["confidence"],
-            emotion_scores=emotion_analysis["emotion_scores"],
-            # Speech Content
-            transcription=speech_analysis["transcription"],
-            sentiment_score=speech_analysis["sentiment_score"],
-            key_phrases=speech_analysis["key_phrases"],
-            hesitation_count=speech_analysis["hesitation_count"],
-            word_per_minute=speech_analysis["word_per_minute"],
-            # Mental Health Metrics
-            stress_level=mental_state["stress_level"],
-            anxiety_level=mental_state["anxiety_level"],
-            depression_indicators=mental_state["depression_indicators"],
-            mood_state=mental_state["mood_state"],
-            energy_level=mental_state["energy_level"],
-            coherence_score=mental_state["coherence_score"],
-            emotional_stability=mental_state["emotional_stability"],
-            sleep_quality_indicator=mental_state["sleep_quality_indicator"],
-            social_engagement_level=mental_state["social_engagement_level"],
-            cognitive_load=mental_state["cognitive_load"],
-            resilience_score=mental_state["resilience_score"]
+            intervention=intervention,
+            analysis_type="voice"  # Set analysis type to 'voice'
         )
         db.add(db_audio_analysis)
 
@@ -901,7 +961,8 @@ async def analyze_text(
             identified_themes=themes_analysis["main_themes"],
             concerns=themes_analysis["potential_concerns"],
             risk_level=assessment["risk_level"],
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            analysis_type="text"  # Set analysis type to 'text'
         )
         db.add(db_text_analysis)
         
@@ -941,4 +1002,945 @@ async def analyze_text(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
-        ) 
+        )
+
+def generate_intervention(emotions, dominant_emotion):
+    # Simple example: return a message based on dominant emotion
+    return f"Suggested intervention for {dominant_emotion} based on detected emotions." 
+
+@app.post("/mental-health/assess", response_model=schemas.MentalHealthAssessmentResponse)
+async def create_mental_health_assessment(
+    assessment: schemas.MentalHealthAssessmentCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Create a new mental health assessment."""
+    try:
+        # Create the assessment
+        db_assessment = crud.create_mental_health_assessment(
+            db=db,
+            user_id=current_user.id,
+            assessment_data=assessment.dict()
+        )
+        
+        # Generate AI insights
+        current_metrics = {
+            "depression": db_assessment.depression_score,
+            "anxiety": db_assessment.anxiety_score,
+            "stress": db_assessment.stress_score,
+            "sleep_quality": db_assessment.sleep_quality_score,
+            "emotional_regulation": db_assessment.emotional_regulation,
+            "social_connection": db_assessment.social_connection,
+            "resilience": db_assessment.resilience_score,
+            "mindfulness": db_assessment.mindfulness_score
+        }
+        
+        # Predict outcomes
+        intervention_plan = {
+            "type": "comprehensive",
+            "duration": "ongoing",
+            "focus_areas": list(current_metrics.keys())
+        }
+        
+        predictions = ai_utils.predict_outcomes(current_metrics, intervention_plan)
+        
+        # Update assessment with AI insights
+        db_assessment.ai_insights = {
+            "predictions": predictions,
+            "risk_level": "high" if any(rf["level"] == "high" for rf in predictions["risk_factors"]) else "medium",
+            "recommendations": ai_utils.generate_recommendations({
+                "areas_of_concern": [
+                    {"metric": k, "deterioration": v}
+                    for k, v in current_metrics.items()
+                    if v > 0.7
+                ]
+            })
+        }
+        
+        db.commit()
+        db.refresh(db_assessment)
+        
+        return db_assessment
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating mental health assessment: {str(e)}"
+        )
+
+@app.get("/mental-health/assessments/history", response_model=List[schemas.MentalHealthAssessmentResponse])
+async def get_assessment_history(
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get user's mental health assessment history."""
+    assessments = crud.get_mental_health_assessments(
+        db=db,
+        user_id=current_user.id,
+        skip=skip,
+        limit=limit
+    )
+    return assessments
+
+@app.get("/mental-health/assessments/trends", response_model=schemas.MentalHealthTrendsResponse)
+async def get_assessment_trends(
+    days: int = 30,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get trends in mental health assessments over time."""
+    trends = crud.calculate_assessment_trends(
+        db=db,
+        user_id=current_user.id,
+        days=days
+    )
+    
+    if not trends:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No assessment data available for the specified period"
+        )
+    
+    # Analyze trends and generate insights
+    insights = ai_utils.analyze_mental_health_trends(trends)
+    
+    return {
+        "trends": trends,
+        "insights": insights,
+        "risk_level": "high" if any(concern["deterioration"] > 0.2 for concern in insights["areas_of_concern"]) else "medium",
+        "recommendations": insights["recommendations"]
+    }
+
+@app.post("/mental-health/interventions/track", response_model=schemas.InterventionProgressResponse)
+async def track_intervention_progress(
+    progress: schemas.InterventionProgressCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Track progress of a mental health intervention."""
+    try:
+        # Get the intervention
+        intervention = crud.get_mental_health_intervention(
+            db=db,
+            intervention_id=progress.intervention_id
+        )
+        
+        if not intervention:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Intervention not found"
+            )
+        
+        # Create progress update
+        db_progress = crud.create_intervention_progress(
+            db=db,
+            intervention_id=progress.intervention_id,
+            progress_data=progress.dict()
+        )
+        
+        # Generate AI feedback
+        feedback = ai_utils.generate_intervention_feedback(
+            progress_metrics=progress.dict(),
+            intervention_type=intervention.intervention_type
+        )
+        
+        return {
+            "intervention": intervention,
+            "ai_feedback": feedback,
+            "next_steps": feedback["next_steps"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error tracking intervention progress: {str(e)}"
+        )
+
+# Stress Tracking Endpoints
+@app.post("/stress/track", response_model=schemas.StressTrackingResponse, tags=["Stress Management"])
+async def track_stress(
+    stress_data: schemas.StressTrackingCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Track user's stress level with multi-modal analysis.
+    
+    This endpoint records stress levels using various analysis methods:
+    - Facial expression analysis
+    - Voice stress analysis
+    - Text sentiment analysis
+    
+    Args:
+        stress_data (schemas.StressTrackingCreate): Stress tracking data including:
+            - stress_level: Float (0-1 scale)
+            - source: String (facial/voice/text)
+            - context: String (activity context)
+            - location: Optional[String]
+            - analysis results from different modalities
+            
+    Returns:
+        schemas.StressTrackingResponse: Recorded stress tracking data
+        
+    Example:
+        ```json
+        {
+            "stress_level": 0.75,
+            "source": "facial",
+            "context": "During work meeting",
+            "location": "Office",
+            "facial_analysis": {
+                "tension_score": 0.8,
+                "facial_markers": {...}
+            }
+        }
+        ```
+    """
+    return crud.create_stress_tracking(db=db, user_id=current_user.id, stress_data=stress_data.dict())
+
+@app.get("/stress/history", response_model=List[schemas.StressTrackingResponse], tags=["Stress Management"])
+async def get_stress_history(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's stress tracking history with pagination.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.StressTrackingResponse]: List of stress tracking records
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "timestamp": "2024-03-15T10:30:00Z",
+                "stress_level": 0.75,
+                "source": "facial",
+                "context": "During work meeting",
+                "location": "Office",
+                "facial_analysis": {...}
+            }
+        ]
+        ```
+    """
+    return crud.get_stress_tracking(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+# Meditation Session Endpoints
+@app.post("/meditation/session", response_model=schemas.MeditationSessionResponse, tags=["Meditation"])
+async def create_meditation(
+    session_data: schemas.MeditationSessionCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new meditation session with AI-generated guidance.
+    
+    This endpoint creates a meditation session with:
+    - AI-generated meditation script
+    - Session type selection
+    - Duration tracking
+    - Progress monitoring
+    
+    Args:
+        session_data (schemas.MeditationSessionCreate): Meditation session data including:
+            - session_type: String (breathing/mindfulness/guided)
+            - duration: Integer (minutes)
+            - script: String (AI-generated meditation script)
+            - audio_path: Optional[String]
+            - completion_status: Optional[Float]
+            - user_feedback: Optional[Dict]
+            
+    Returns:
+        schemas.MeditationSessionResponse: Created meditation session
+        
+    Example:
+        ```json
+        {
+            "session_type": "mindfulness",
+            "duration": 15,
+            "script": "Begin by finding a comfortable position...",
+            "completion_status": 1.0,
+            "user_feedback": {
+                "effectiveness": 0.8,
+                "difficulty": 0.3
+            }
+        }
+        ```
+    """
+    return crud.create_meditation_session(db=db, user_id=current_user.id, session_data=session_data.dict())
+
+@app.get("/meditation/history", response_model=List[schemas.MeditationSessionResponse], tags=["Meditation"])
+async def get_meditation_history(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's meditation session history.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.MeditationSessionResponse]: List of meditation sessions
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "timestamp": "2024-03-15T10:30:00Z",
+                "session_type": "mindfulness",
+                "duration": 15,
+                "script": "...",
+                "completion_status": 1.0,
+                "effectiveness_score": 0.8
+            }
+        ]
+        ```
+    """
+    return crud.get_meditation_sessions(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+# Mood Journal Endpoints
+@app.post("/mood/journal", response_model=schemas.MoodJournalResponse, tags=["Mood Tracking"])
+async def create_mood_journal(
+    journal_data: schemas.MoodJournalCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new mood journal entry with multi-modal analysis.
+    
+    This endpoint creates a mood journal entry with:
+    - Text content analysis
+    - Audio emotion analysis
+    - Facial expression analysis
+    - Sentiment analysis
+    - Theme identification
+    
+    Args:
+        journal_data (schemas.MoodJournalCreate): Mood journal data including:
+            - text_content: Optional[String]
+            - audio_path: Optional[String]
+            - facial_emotions: Optional[Dict]
+            - mood_score: Float
+            - dominant_emotions: List[String]
+            - sentiment_analysis: Dict
+            - themes: List[String]
+            
+    Returns:
+        schemas.MoodJournalResponse: Created mood journal entry
+        
+    Example:
+        ```json
+        {
+            "text_content": "Feeling productive today...",
+            "mood_score": 0.8,
+            "dominant_emotions": ["happy", "energetic"],
+            "sentiment_analysis": {
+                "positive": 0.8,
+                "negative": 0.1
+            },
+            "themes": ["productivity", "motivation"]
+        }
+        ```
+    """
+    return crud.create_mood_journal(db=db, user_id=current_user.id, journal_data=journal_data.dict())
+
+@app.get("/mood/history", response_model=List[schemas.MoodJournalResponse], tags=["Mood Tracking"])
+async def get_mood_history(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's mood journal history.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.MoodJournalResponse]: List of mood journal entries
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "timestamp": "2024-03-15T10:30:00Z",
+                "text_content": "Feeling productive today...",
+                "mood_score": 0.8,
+                "dominant_emotions": ["happy", "energetic"],
+                "sentiment_analysis": {...},
+                "themes": ["productivity", "motivation"]
+            }
+        ]
+        ```
+    """
+    return crud.get_mood_journals(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+# Cognitive Game Endpoints
+@app.post("/cognitive/game", response_model=schemas.CognitiveGameResponse, tags=["Cognitive Training"])
+async def create_cognitive_game(
+    game_data: schemas.CognitiveGameCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Record a cognitive game session with performance metrics.
+    
+    This endpoint records cognitive game sessions with:
+    - Game type and difficulty
+    - Performance metrics
+    - Cognitive assessment scores
+    
+    Args:
+        game_data (schemas.CognitiveGameCreate): Game session data including:
+            - game_type: String (memory/focus/puzzle)
+            - difficulty_level: Integer
+            - duration: Integer (seconds)
+            - score: Float
+            - accuracy: Float
+            - reaction_time: Float
+            - completion_status: Boolean
+            - cognitive metrics
+            
+    Returns:
+        schemas.CognitiveGameResponse: Recorded game session
+        
+    Example:
+        ```json
+        {
+            "game_type": "memory",
+            "difficulty_level": 3,
+            "duration": 300,
+            "score": 0.85,
+            "accuracy": 0.9,
+            "reaction_time": 0.5,
+            "completion_status": true,
+            "attention_score": 0.8,
+            "memory_score": 0.85,
+            "problem_solving_score": 0.75
+        }
+        ```
+    """
+    return crud.create_cognitive_game(db=db, user_id=current_user.id, game_data=game_data.dict())
+
+@app.get("/cognitive/history", response_model=List[schemas.CognitiveGameResponse], tags=["Cognitive Training"])
+async def get_cognitive_history(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's cognitive game history.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.CognitiveGameResponse]: List of cognitive game sessions
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "timestamp": "2024-03-15T10:30:00Z",
+                "game_type": "memory",
+                "difficulty_level": 3,
+                "duration": 300,
+                "score": 0.85,
+                "accuracy": 0.9,
+                "reaction_time": 0.5,
+                "completion_status": true,
+                "attention_score": 0.8,
+                "memory_score": 0.85,
+                "problem_solving_score": 0.75
+            }
+        ]
+        ```
+    """
+    return crud.get_cognitive_games(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+# Sleep Record Endpoints
+@app.post("/sleep/record", response_model=schemas.SleepRecordResponse, tags=["Sleep Analysis"])
+async def create_sleep_record(
+    sleep_data: schemas.SleepRecordCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new sleep record with comprehensive analysis.
+    
+    This endpoint records sleep data with:
+    - Sleep duration and quality metrics
+    - Sleep environment data
+    - Sleep habits tracking
+    - AI-generated analysis and recommendations
+    
+    Args:
+        sleep_data (schemas.SleepRecordCreate): Sleep record data including:
+            - date: Date
+            - sleep_duration: Float (hours)
+            - sleep_quality: Float (0-1)
+            - deep_sleep_duration: Float
+            - rem_sleep_duration: Float
+            - environment data
+            - sleep habits
+            - analysis and recommendations
+            
+    Returns:
+        schemas.SleepRecordResponse: Created sleep record
+        
+    Example:
+        ```json
+        {
+            "date": "2024-03-15",
+            "sleep_duration": 7.5,
+            "sleep_quality": 0.8,
+            "deep_sleep_duration": 2.0,
+            "rem_sleep_duration": 1.5,
+            "room_temperature": 22.5,
+            "noise_level": 0.2,
+            "light_level": 0.1,
+            "bedtime_routine": {
+                "activities": ["reading", "meditation"],
+                "duration": 30
+            },
+            "wake_up_time": "2024-03-15T07:00:00Z",
+            "sleep_onset_time": "2024-03-14T23:30:00Z",
+            "sleep_analysis": {
+                "sleep_efficiency": 0.9,
+                "sleep_cycles": 5
+            },
+            "recommendations": [
+                "Maintain consistent sleep schedule",
+                "Reduce screen time before bed"
+            ]
+        }
+        ```
+    """
+    return crud.create_sleep_record(db=db, user_id=current_user.id, sleep_data=sleep_data.dict())
+
+@app.get("/sleep/history", response_model=List[schemas.SleepRecordResponse], tags=["Sleep Analysis"])
+async def get_sleep_history(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's sleep record history.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.SleepRecordResponse]: List of sleep records
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "date": "2024-03-15",
+                "sleep_duration": 7.5,
+                "sleep_quality": 0.8,
+                "deep_sleep_duration": 2.0,
+                "rem_sleep_duration": 1.5,
+                "room_temperature": 22.5,
+                "noise_level": 0.2,
+                "light_level": 0.1,
+                "bedtime_routine": {...},
+                "wake_up_time": "2024-03-15T07:00:00Z",
+                "sleep_onset_time": "2024-03-14T23:30:00Z",
+                "sleep_analysis": {...},
+                "recommendations": [...]
+            }
+        ]
+        ```
+    """
+    return crud.get_sleep_records(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+# Therapy Session Endpoints
+@app.post("/therapy/session", response_model=schemas.TherapySessionResponse, tags=["Therapy"])
+async def create_therapy_session(
+    session_data: schemas.TherapySessionCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new therapy session with AI analysis.
+    
+    This endpoint creates a therapy session with:
+    - Session type and duration
+    - Chat content and analysis
+    - Key concerns identification
+    - Action items and follow-up planning
+    
+    Args:
+        session_data (schemas.TherapySessionCreate): Therapy session data including:
+            - session_type: String (chatbot/human)
+            - duration: Integer (minutes)
+            - topic: String
+            - messages: List[Dict]
+            - sentiment_analysis: Dict
+            - key_concerns: List[String]
+            - session_summary: String
+            - action_items: List[String]
+            - follow_up_needed: Boolean
+            - escalation_level: Integer
+            
+    Returns:
+        schemas.TherapySessionResponse: Created therapy session
+        
+    Example:
+        ```json
+        {
+            "session_type": "chatbot",
+            "duration": 30,
+            "topic": "Stress Management",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "I've been feeling overwhelmed lately...",
+                    "timestamp": "2024-03-15T10:00:00Z"
+                },
+                {
+                    "role": "assistant",
+                    "content": "I understand that feeling...",
+                    "timestamp": "2024-03-15T10:00:05Z"
+                }
+            ],
+            "sentiment_analysis": {
+                "overall": "concerned",
+                "emotions": ["anxiety", "stress"]
+            },
+            "key_concerns": [
+                "Work pressure",
+                "Sleep issues"
+            ],
+            "session_summary": "User discussed work-related stress...",
+            "action_items": [
+                "Practice daily meditation",
+                "Set work boundaries"
+            ],
+            "follow_up_needed": true,
+            "escalation_level": 2
+        }
+        ```
+    """
+    return crud.create_therapy_session(db=db, user_id=current_user.id, session_data=session_data.dict())
+
+@app.get("/therapy/history", response_model=List[schemas.TherapySessionResponse], tags=["Therapy"])
+async def get_therapy_history(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's therapy session history.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.TherapySessionResponse]: List of therapy sessions
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "timestamp": "2024-03-15T10:00:00Z",
+                "session_type": "chatbot",
+                "duration": 30,
+                "topic": "Stress Management",
+                "messages": [...],
+                "sentiment_analysis": {...},
+                "key_concerns": [...],
+                "session_summary": "...",
+                "action_items": [...],
+                "follow_up_needed": true,
+                "escalation_level": 2
+            }
+        ]
+        ```
+    """
+    return crud.get_therapy_sessions(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+# Emergency Contact Endpoints
+@app.post("/emergency/contact", response_model=schemas.EmergencyContactResponse, tags=["Emergency"])
+async def create_emergency_contact(
+    contact_data: schemas.EmergencyContactCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Add a new emergency contact.
+    
+    This endpoint adds an emergency contact with:
+    - Contact details
+    - Relationship information
+    - Notification preferences
+    
+    Args:
+        contact_data (schemas.EmergencyContactCreate): Contact data including:
+            - name: String
+            - relationship: String
+            - phone_number: String
+            - email: Optional[String]
+            - is_primary: Boolean
+            - notification preferences
+            
+    Returns:
+        schemas.EmergencyContactResponse: Created emergency contact
+        
+    Example:
+        ```json
+        {
+            "name": "John Doe",
+            "relationship": "Family",
+            "phone_number": "+1234567890",
+            "email": "john@example.com",
+            "is_primary": true,
+            "notify_on_high_stress": true,
+            "notify_on_crisis": true,
+            "notify_on_missed_medication": true
+        }
+        ```
+    """
+    return crud.create_emergency_contact(db=db, user_id=current_user.id, contact_data=contact_data.dict())
+
+@app.get("/emergency/contacts", response_model=List[schemas.EmergencyContactResponse], tags=["Emergency"])
+async def get_emergency_contacts(
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's emergency contacts.
+    
+    Returns:
+        List[schemas.EmergencyContactResponse]: List of emergency contacts
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "name": "John Doe",
+                "relationship": "Family",
+                "phone_number": "+1234567890",
+                "email": "john@example.com",
+                "is_primary": true,
+                "notify_on_high_stress": true,
+                "notify_on_crisis": true,
+                "notify_on_missed_medication": true
+            }
+        ]
+        ```
+    """
+    return crud.get_emergency_contacts(db=db, user_id=current_user.id)
+
+@app.put("/emergency/contact/{contact_id}", response_model=schemas.EmergencyContactResponse, tags=["Emergency"])
+async def update_emergency_contact(
+    contact_id: int,
+    contact_data: schemas.EmergencyContactCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update an existing emergency contact.
+    
+    Args:
+        contact_id (int): ID of the contact to update
+        contact_data (schemas.EmergencyContactCreate): Updated contact data
+        
+    Returns:
+        schemas.EmergencyContactResponse: Updated emergency contact
+        
+    Raises:
+        HTTPException: If contact not found
+    """
+    updated_contact = crud.update_emergency_contact(db=db, contact_id=contact_id, contact_data=contact_data.dict())
+    if not updated_contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return updated_contact
+
+@app.delete("/emergency/contact/{contact_id}", tags=["Emergency"])
+async def delete_emergency_contact(
+    contact_id: int,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete an emergency contact.
+    
+    Args:
+        contact_id (int): ID of the contact to delete
+        
+    Returns:
+        dict: Success message
+        
+    Raises:
+        HTTPException: If contact not found
+    """
+    success = crud.delete_emergency_contact(db=db, contact_id=contact_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"message": "Contact deleted successfully"}
+
+# Emergency Alert Endpoints
+@app.post("/emergency/alert", response_model=schemas.EmergencyAlertResponse, tags=["Emergency"])
+async def create_emergency_alert(
+    alert_data: schemas.EmergencyAlertCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new emergency alert.
+    
+    This endpoint creates an emergency alert with:
+    - Alert type and severity
+    - Description
+    - Response tracking
+    
+    Args:
+        alert_data (schemas.EmergencyAlertCreate): Alert data including:
+            - alert_type: String (high_stress/crisis/missed_medication)
+            - severity: Integer (1-5)
+            - description: String
+            - response details
+            
+    Returns:
+        schemas.EmergencyAlertResponse: Created emergency alert
+        
+    Example:
+        ```json
+        {
+            "alert_type": "high_stress",
+            "severity": 4,
+            "description": "User reported severe anxiety symptoms",
+            "responded_by": "AI_System",
+            "response_time": "2024-03-15T10:30:00Z",
+            "resolution": "Contacted emergency contact"
+        }
+        ```
+    """
+    return crud.create_emergency_alert(db=db, user_id=current_user.id, alert_data=alert_data.dict())
+
+@app.get("/emergency/alerts", response_model=List[schemas.EmergencyAlertResponse], tags=["Emergency"])
+async def get_emergency_alerts(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve user's emergency alert history.
+    
+    Args:
+        skip (int): Number of records to skip
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        List[schemas.EmergencyAlertResponse]: List of emergency alerts
+        
+    Example Response:
+        ```json
+        [
+            {
+                "id": 1,
+                "timestamp": "2024-03-15T10:30:00Z",
+                "alert_type": "high_stress",
+                "severity": 4,
+                "description": "User reported severe anxiety symptoms",
+                "responded_by": "AI_System",
+                "response_time": "2024-03-15T10:30:00Z",
+                "resolution": "Contacted emergency contact"
+            }
+        ]
+        ```
+    """
+    return crud.get_emergency_alerts(db=db, user_id=current_user.id, skip=skip, limit=limit)
+
+@app.put("/emergency/alert/{alert_id}", response_model=schemas.EmergencyAlertResponse, tags=["Emergency"])
+async def update_emergency_alert(
+    alert_id: int,
+    alert_data: schemas.EmergencyAlertCreate,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update an existing emergency alert.
+    
+    Args:
+        alert_id (int): ID of the alert to update
+        alert_data (schemas.EmergencyAlertCreate): Updated alert data
+        
+    Returns:
+        schemas.EmergencyAlertResponse: Updated emergency alert
+        
+    Raises:
+        HTTPException: If alert not found
+    """
+    updated_alert = crud.update_emergency_alert(db=db, alert_id=alert_id, alert_data=alert_data.dict())
+    if not updated_alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return updated_alert
+
+# Custom OpenAPI schema
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    openapi_schema = get_openapi(
+        title="NeuroCare API",
+        version="1.0.0",
+        openapi_version="3.0.0",  # Explicitly specify OpenAPI version
+        description="State-of-the-art mental health analysis and intervention system",
+        routes=app.routes,
+    )
+    
+    # Add security schemes
+    openapi_schema["components"]["securitySchemes"] = {
+        "bearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+        }
+    }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+# Custom Swagger UI
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - API Documentation",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui.css",
+    ) 

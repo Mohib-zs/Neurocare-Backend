@@ -1,8 +1,8 @@
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, Float, ARRAY, ForeignKey, JSON, Text
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Float, ARRAY, ForeignKey, JSON, Text, Date
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from database import Base
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 class User(Base):
     __tablename__ = "users"
@@ -22,6 +22,15 @@ class User(Base):
     emotion_history = relationship("EmotionHistory", back_populates="user", cascade="all, delete-orphan")
     user_profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
     text_analyses = relationship("TextAnalysis", back_populates="user")
+    mental_health_assessments = relationship("MentalHealthAssessment", back_populates="user", cascade="all, delete-orphan")
+    stress_records = relationship("StressTracking", back_populates="user", cascade="all, delete-orphan")
+    meditation_sessions = relationship("MeditationSession", back_populates="user", cascade="all, delete-orphan")
+    mood_journals = relationship("MoodJournal", back_populates="user", cascade="all, delete-orphan")
+    cognitive_games = relationship("CognitiveGame", back_populates="user", cascade="all, delete-orphan")
+    sleep_records = relationship("SleepRecord", back_populates="user", cascade="all, delete-orphan")
+    therapy_sessions = relationship("TherapySession", back_populates="user", cascade="all, delete-orphan")
+    emergency_contacts = relationship("EmergencyContact", back_populates="user", cascade="all, delete-orphan")
+    emergency_alerts = relationship("EmergencyAlert", back_populates="user", cascade="all, delete-orphan")
 
     def get_emotion_trends(self, days: int = 30):
         """Calculate emotion trends over specified number of days."""
@@ -295,6 +304,7 @@ class EmotionAnalysis(Base):
     intervention = Column(String)  # AI-generated intervention
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    analysis_type = Column(String, default="facial")  # Can be 'facial', 'voice', or 'text'
     
     # Relationships
     user = relationship("User", back_populates="emotion_analyses")
@@ -460,4 +470,292 @@ class TextAnalysisIntervention(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     # Relationships
-    text_analysis = relationship("TextAnalysis", back_populates="intervention") 
+    text_analysis = relationship("TextAnalysis", back_populates="intervention")
+
+class MentalHealthAssessment(Base):
+    __tablename__ = "mental_health_assessments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Core metrics
+    depression_score = Column(Float)
+    anxiety_score = Column(Float)
+    stress_score = Column(Float)
+    sleep_quality_score = Column(Float)
+    emotional_regulation = Column(Float)
+    social_connection = Column(Float)
+    resilience_score = Column(Float)
+    mindfulness_score = Column(Float)
+    
+    # Detailed metrics
+    cognitive_metrics = Column(JSON)
+    activity_data = Column(JSON)
+    social_data = Column(JSON)
+    sleep_data = Column(JSON)
+    
+    # Risk assessment
+    risk_factors = Column(ARRAY(String))
+    protective_factors = Column(ARRAY(String))
+    suicide_risk = Column(Float)
+    self_harm_risk = Column(Float)
+    
+    # Treatment metrics
+    treatment_adherence = Column(Float)
+    medication_compliance = Column(Float)
+    therapy_attendance = Column(Float)
+    
+    # Analysis results
+    cognitive_function = Column(JSON)
+    activity_level = Column(Float)
+    social_engagement = Column(Float)
+    sleep_patterns = Column(JSON)
+    progress_metrics = Column(JSON)
+    ai_insights = Column(JSON)
+    recommended_interventions = Column(JSON)
+    predicted_outcomes = Column(JSON)
+
+    # Relationships
+    user = relationship("User", back_populates="mental_health_assessments")
+    interventions = relationship("MentalHealthIntervention", back_populates="assessment")
+
+class MentalHealthIntervention(Base):
+    __tablename__ = "mental_health_interventions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assessment_id = Column(Integer, ForeignKey("mental_health_assessments.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Intervention details
+    intervention_type = Column(String)
+    description = Column(String)
+    goals = Column(ARRAY(String))
+    expected_outcomes = Column(JSON)
+    ai_recommendations = Column(JSON)
+    personalized_approach = Column(JSON)
+    
+    # Progress tracking
+    progress_metrics = Column(JSON)
+    adherence_score = Column(Float)
+    effectiveness_score = Column(Float)
+
+    # Relationships
+    assessment = relationship("MentalHealthAssessment", back_populates="interventions")
+    progress_updates = relationship("InterventionProgress", back_populates="intervention")
+
+class InterventionProgress(Base):
+    __tablename__ = "intervention_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    intervention_id = Column(Integer, ForeignKey("mental_health_interventions.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Progress metrics
+    progress_metrics = Column(JSON)
+    adherence_score = Column(Float)
+    effectiveness_score = Column(Float)
+    
+    # AI feedback
+    ai_feedback = Column(JSON)
+    next_steps = Column(JSON)
+
+    # Relationships
+    intervention = relationship("MentalHealthIntervention", back_populates="progress_updates")
+
+# Add relationships to User model
+User.mental_health_assessments = relationship("MentalHealthAssessment", back_populates="user")
+User.stress_records = relationship("StressTracking", back_populates="user", cascade="all, delete-orphan")
+User.meditation_sessions = relationship("MeditationSession", back_populates="user", cascade="all, delete-orphan")
+User.mood_journals = relationship("MoodJournal", back_populates="user", cascade="all, delete-orphan")
+User.cognitive_games = relationship("CognitiveGame", back_populates="user", cascade="all, delete-orphan")
+User.sleep_records = relationship("SleepRecord", back_populates="user", cascade="all, delete-orphan")
+User.therapy_sessions = relationship("TherapySession", back_populates="user", cascade="all, delete-orphan")
+User.emergency_contacts = relationship("EmergencyContact", back_populates="user", cascade="all, delete-orphan")
+User.emergency_alerts = relationship("EmergencyAlert", back_populates="user", cascade="all, delete-orphan")
+
+class StressTracking(Base):
+    __tablename__ = "stress_tracking"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Stress metrics
+    stress_level = Column(Float)  # 0-1 scale
+    source = Column(String)  # 'facial', 'voice', 'text'
+    context = Column(String)  # What was happening during measurement
+    location = Column(String, nullable=True)
+    
+    # Analysis results
+    facial_analysis = Column(JSON, nullable=True)
+    voice_analysis = Column(JSON, nullable=True)
+    text_analysis = Column(JSON, nullable=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="stress_records")
+
+class MeditationSession(Base):
+    __tablename__ = "meditation_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Session details
+    session_type = Column(String)  # 'breathing', 'mindfulness', 'guided'
+    duration = Column(Integer)  # in minutes
+    script = Column(Text)  # AI-generated meditation script
+    audio_path = Column(String, nullable=True)
+    
+    # Progress tracking
+    completion_status = Column(Float)  # 0-1 scale
+    user_feedback = Column(JSON, nullable=True)
+    effectiveness_score = Column(Float, nullable=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="meditation_sessions")
+
+class MoodJournal(Base):
+    __tablename__ = "mood_journals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Journal content
+    text_content = Column(Text, nullable=True)
+    audio_path = Column(String, nullable=True)
+    facial_emotions = Column(JSON, nullable=True)
+    
+    # Analysis results
+    mood_score = Column(Float)
+    dominant_emotions = Column(ARRAY(String))
+    sentiment_analysis = Column(JSON)
+    themes = Column(ARRAY(String))
+    
+    # Relationships
+    user = relationship("User", back_populates="mood_journals")
+
+class CognitiveGame(Base):
+    __tablename__ = "cognitive_games"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Game details
+    game_type = Column(String)  # 'memory', 'focus', 'puzzle'
+    difficulty_level = Column(Integer)
+    duration = Column(Integer)  # in seconds
+    
+    # Performance metrics
+    score = Column(Float)
+    accuracy = Column(Float)
+    reaction_time = Column(Float)
+    completion_status = Column(Boolean)
+    
+    # Cognitive metrics
+    attention_score = Column(Float)
+    memory_score = Column(Float)
+    problem_solving_score = Column(Float)
+    
+    # Relationships
+    user = relationship("User", back_populates="cognitive_games")
+
+class SleepRecord(Base):
+    __tablename__ = "sleep_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    date = Column(Date)
+    
+    # Sleep metrics
+    sleep_duration = Column(Float)  # in hours
+    sleep_quality = Column(Float)  # 0-1 scale
+    deep_sleep_duration = Column(Float)
+    rem_sleep_duration = Column(Float)
+    
+    # Sleep environment
+    room_temperature = Column(Float, nullable=True)
+    noise_level = Column(Float, nullable=True)
+    light_level = Column(Float, nullable=True)
+    
+    # Sleep habits
+    bedtime_routine = Column(JSON)
+    wake_up_time = Column(DateTime)
+    sleep_onset_time = Column(DateTime)
+    
+    # Analysis and recommendations
+    sleep_analysis = Column(JSON)
+    recommendations = Column(ARRAY(String))
+    
+    # Relationships
+    user = relationship("User", back_populates="sleep_records")
+
+class TherapySession(Base):
+    __tablename__ = "therapy_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Session details
+    session_type = Column(String)  # 'chatbot', 'human'
+    duration = Column(Integer)  # in minutes
+    topic = Column(String)
+    
+    # Chat content
+    messages = Column(JSON)  # Array of message objects
+    sentiment_analysis = Column(JSON)
+    key_concerns = Column(ARRAY(String))
+    
+    # Outcomes
+    session_summary = Column(Text)
+    action_items = Column(ARRAY(String))
+    follow_up_needed = Column(Boolean)
+    escalation_level = Column(Integer)  # 0-5 scale
+    
+    # Relationships
+    user = relationship("User", back_populates="therapy_sessions")
+
+class EmergencyContact(Base):
+    __tablename__ = "emergency_contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    
+    # Contact details
+    name = Column(String)
+    relationship_type = Column(String)  # Changed from relationship to relationship_type
+    phone_number = Column(String)
+    email = Column(String, nullable=True)
+    is_primary = Column(Boolean, default=False)
+    
+    # Notification preferences
+    notify_on_high_stress = Column(Boolean, default=True)
+    notify_on_crisis = Column(Boolean, default=True)
+    notify_on_missed_medication = Column(Boolean, default=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="emergency_contacts")
+
+class EmergencyAlert(Base):
+    __tablename__ = "emergency_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Alert details
+    alert_type = Column(String)  # 'high_stress', 'crisis', 'missed_medication'
+    severity = Column(Integer)  # 1-5 scale
+    description = Column(Text)
+    
+    # Response tracking
+    responded_by = Column(String, nullable=True)
+    response_time = Column(DateTime, nullable=True)
+    resolution = Column(Text, nullable=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="emergency_alerts") 
