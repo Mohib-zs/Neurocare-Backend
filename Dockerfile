@@ -35,6 +35,7 @@ COPY . .
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 RUN pip install deepface tf-keras
+RUN pip install PyJWT
 RUN python -m spacy download en_core_web_sm
 RUN python -m nltk.downloader punkt averaged_perceptron_tagger wordnet
 

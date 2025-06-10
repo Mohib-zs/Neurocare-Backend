@@ -80,6 +80,7 @@ sudo apt-get install python3.9 python3.9-venv python3.9-distutils -y
 sudo apt-get update && sudo apt-get install portaudio19-dev python3-dev
 sudo apt-get install python3-pyaudio
 pip install -r requirements.txt
+pip install PyJWT
 sudo apt-get install postgresql-client-common
 sudo apt-get install postgresql-client
 sudo apt-get install postgresql postgresql-contrib
