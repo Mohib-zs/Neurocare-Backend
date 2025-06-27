@@ -4,10 +4,10 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, date
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 # Third-party imports
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Body, Path
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Body, Path, BackgroundTasks
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -16,12 +16,28 @@ from fastapi.openapi.utils import get_openapi
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 try:
     import jwt
 except ImportError:
     raise ImportError(
         "PyJWT package is required. Please install it using: pip install PyJWT"
     )
+import chromadb
+from chromadb.config import Settings
+from chromadb.utils import embedding_functions
+import PyPDF2
+import asyncio
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationChain
+from langchain.prompts import PromptTemplate
+import numpy as np
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from langchain.llms.base import LLM
 
 # Local application imports
 import models
@@ -79,7 +95,8 @@ from audio_analysis_utils import (
     transcribe_and_analyze_speech,
     assess_mental_state,
     generate_recommendations,
-    generate_mental_health_scores
+    generate_mental_health_scores,
+    convert_to_wav
 )
 from text_analysis_utils import (
     analyze_text_sentiment,
@@ -674,31 +691,37 @@ def get_all_users(db: Session = Depends(get_db)):
 @app.post("/mental-health/analyze/audio", response_model=schemas.AudioAnalysisResponse)
 async def analyze_audio(
     audio: UploadFile = File(...),
-    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     try:
         # Save the uploaded audio file
-        audio_path = await save_audio_file(audio)
+        audio_data = await audio.read()
+        audio_path = save_audio_file(audio_data, user_id=0)
+
+        # Auto-convert MP3 to WAV if needed
+        if audio_path.endswith('.mp3'):
+            wav_path = audio_path.replace('.mp3', '.wav')
+            convert_to_wav(audio_path, wav_path)
+            audio_path = wav_path
 
         # Extract audio features
-        features = await extract_audio_features(audio_path)
+        features = extract_audio_features(audio_path)
 
         # Analyze voice emotion
-        emotion_analysis = await analyze_voice_emotion(audio_path)
+        emotion_analysis = analyze_voice_emotion(features)
 
         # Transcribe and analyze speech
-        speech_analysis = await transcribe_and_analyze_speech(audio_path)
+        speech_analysis = transcribe_and_analyze_speech(audio_path)
 
         # Assess mental state
-        mental_state = await assess_mental_state(
+        mental_state = assess_mental_state(
             features,
             emotion_analysis,
             speech_analysis
         )
 
         # Generate mental health scores
-        mental_health_scores = await generate_mental_health_scores(
+        mental_health_scores = generate_mental_health_scores(
             features,
             emotion_analysis,
             speech_analysis,
@@ -715,15 +738,15 @@ async def analyze_audio(
         # Create session ID
         session_id = str(uuid.uuid4())
 
-        # Create database record for audio analysis
+        # Create database record for audio analysis (user_id set to None)
         db_audio_analysis = models.AudioAnalysis(
-            user_id=current_user.id,
+            user_id=None,
             session_id=session_id,
             image_path=None,  # No image for audio analysis
             emotions=emotion_analysis,
             dominant_emotion=emotion_analysis["dominant_emotion"],
             confidence_score=emotion_analysis["confidence"],
-            intervention=intervention,
+            intervention=None,  # Set to None or handle as needed
             analysis_type="voice"  # Set analysis type to 'voice'
         )
         db.add(db_audio_analysis)
@@ -941,63 +964,79 @@ async def analyze_text(
         linguistic_analysis = analyze_linguistic_patterns(text_data.content)
         themes_analysis = extract_themes_and_concerns(text_data.content)
         
-        # Generate comprehensive assessment
+        # Generate comprehensive assessment using the original text
         assessment = await generate_mental_health_assessment(
             sentiment_analysis,
             linguistic_analysis,
-            themes_analysis
+            themes_analysis,
+            text_data.content
         )
         
-        # Generate personalized interventions
-        interventions = await generate_personalized_interventions(assessment)
+        # Generate personalized interventions using the original text and assessment
+        interventions = await generate_personalized_interventions(assessment, text_data.content)
         
-        # Create database record
-        db_text_analysis = models.TextAnalysis(
-            user_id=current_user.id,
-            content=text_data.content,
-            sentiment_score=sentiment_analysis["sentiment"]["polarity"],
-            emotion_scores=sentiment_analysis["emotions"],
-            linguistic_metrics=linguistic_analysis,
-            identified_themes=themes_analysis["main_themes"],
-            concerns=themes_analysis["potential_concerns"],
-            risk_level=assessment["risk_level"],
-            timestamp=datetime.now(),
-            analysis_type="text"  # Set analysis type to 'text'
-        )
-        db.add(db_text_analysis)
-        
-        # Create intervention record
-        db_intervention = models.TextAnalysisIntervention(
-            text_analysis_id=db_text_analysis.id,
-            recommendations=interventions["daily_practices"],
-            goals=interventions["weekly_goals"],
-            crisis_plan=interventions["crisis_plan"],
-            reflection_prompts=interventions["reflection_prompts"],
-            progress_metrics=interventions["progress_metrics"]
-        )
-        db.add(db_intervention)
-        
-        # Commit the transaction
-        db.commit()
-        db.refresh(db_text_analysis)
-        db.refresh(db_intervention)
-        
-        # Create response
+        # Create response with the actual Mistral-generated assessment and interventions
         response = schemas.TextAnalysisResponse(
-            analysis_id=db_text_analysis.id,
-            timestamp=db_text_analysis.timestamp,
-            sentiment_analysis=sentiment_analysis,
-            linguistic_analysis=linguistic_analysis,
-            themes_analysis=themes_analysis,
-            mental_health_assessment=assessment,
+            analysis_id=1,  # Temporary ID
+            timestamp=datetime.now(),
+            sentiment_analysis=schemas.SentimentAnalysis(
+                sentiment=sentiment_analysis["sentiment"],
+                emotions=sentiment_analysis["emotions"]
+            ),
+            linguistic_analysis=schemas.LinguisticAnalysis(
+                sentence_analysis=linguistic_analysis["sentence_analysis"],
+                linguistic_features=linguistic_analysis["linguistic_features"],
+                vocabulary_diversity=linguistic_analysis["vocabulary_diversity"],
+                word_count=linguistic_analysis["word_count"]
+            ),
+            themes_analysis=schemas.ThemesAnalysis(
+                main_themes=themes_analysis["main_themes"],
+                potential_concerns=themes_analysis["potential_concerns"]
+            ),
+            mental_health_assessment=schemas.MentalHealthAssessmentResponse(
+                id=1,
+                user_id=1,
+                timestamp=datetime.now(),
+                depression_score=assessment.get("depression_score", 0.0),
+                anxiety_score=assessment.get("anxiety_score", 0.0),
+                stress_score=assessment.get("stress_score", 0.0),
+                sleep_quality_score=assessment.get("sleep_quality_score", 0.0),
+                emotional_regulation=assessment.get("emotional_regulation", 0.0),
+                social_connection=assessment.get("social_connection", 0.0),
+                resilience_score=assessment.get("resilience_score", 0.0),
+                mindfulness_score=assessment.get("mindfulness_score", 0.0),
+                cognitive_metrics=assessment.get("cognitive_metrics", {}),
+                activity_data=assessment.get("activity_data", {}),
+                social_data=assessment.get("social_data", {}),
+                sleep_data=assessment.get("sleep_data", {}),
+                risk_factors=assessment.get("risk_factors", []),
+                cognitive_function=assessment.get("cognitive_function", {}),
+                activity_level=assessment.get("activity_level", 0.0),
+                social_engagement=assessment.get("social_engagement", 0.0),
+                sleep_patterns=assessment.get("sleep_patterns", {}),
+                suicide_risk=assessment.get("suicide_risk", 0.0),
+                self_harm_risk=assessment.get("self_harm_risk", 0.0),
+                protective_factors=assessment.get("protective_factors", []),
+                treatment_adherence=assessment.get("treatment_adherence", 0.0),
+                medication_compliance=assessment.get("medication_compliance", 0.0),
+                therapy_attendance=assessment.get("therapy_attendance", 0.0),
+                progress_metrics=assessment.get("progress_metrics", {}),
+                ai_insights={
+                    "emotional_state": assessment.get("emotional_state", {}),
+                    "key_concerns": assessment.get("key_concerns", []),
+                    "coping_mechanisms": assessment.get("coping_mechanisms", []),
+                    "support_needs": assessment.get("support_needs", []),
+                    "immediate_recommendations": assessment.get("immediate_recommendations", [])
+                },
+                recommended_interventions=interventions,
+                predicted_outcomes=assessment.get("predicted_outcomes", {})
+            ),
             personalized_interventions=interventions
         )
         
         return response
         
     except Exception as e:
-        # Rollback transaction in case of error
-        db.rollback()
         logger.error(f"Error in text analysis: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1943,4 +1982,309 @@ async def custom_swagger_ui_html():
         title=app.title + " - API Documentation",
         swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui-bundle.js",
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui.css",
-    ) 
+    )
+
+# Initialize ChromaDB
+chroma_client = chromadb.Client(Settings(
+    persist_directory="chroma_db",
+    anonymized_telemetry=False
+))
+
+# Initialize embedding function
+embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name="all-MiniLM-L6-v2"
+)
+
+# Create or get collection
+collection = chroma_client.get_or_create_collection(
+    name="mental_health_knowledge",
+    embedding_function=embedding_function
+)
+
+# Initialize Mistral API
+MISTRAL_API_URL = "https://router.huggingface.co/together/v1/chat/completions"
+MISTRAL_API_KEY = os.getenv("HF_TOKEN")
+
+if not MISTRAL_API_KEY:
+    raise ValueError("HF_TOKEN environment variable is not set")
+
+# Configure retry strategy
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+
+# Create session with retry strategy
+session = requests.Session()
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+
+# Initialize conversation memory
+conversation_memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    return_messages=True
+)
+
+# Custom prompt template for mental health conversations
+MENTAL_HEALTH_PROMPT = """You are a compassionate and professional mental health chatbot. Your responses should be:
+1. Empathetic and supportive
+2. Evidence-based and accurate
+3. Clear and easy to understand
+4. Focused on the user's specific needs
+5. Mindful of crisis situations
+
+Current conversation:
+{chat_history}
+
+User: {input}
+Assistant:"""
+
+# Create a custom LLM class for Mistral
+class MistralLLM(LLM):
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
+        try:
+            response = session.post(
+                MISTRAL_API_URL,
+                headers={"Authorization": f"Bearer {MISTRAL_API_KEY}"},
+                json={
+                    "messages": [{"role": "user", "content": prompt}],
+                    "model": "mistralai/Mistral-Small-24B-Instruct-2501",
+                    "temperature": 0.7,
+                    "max_tokens": 1000,
+                    "top_p": 0.95
+                },
+                timeout=30
+            )
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                raise Exception(f"API error: {response.text}")
+        except Exception as e:
+            logger.error(f"Error in Mistral API call: {str(e)}")
+            raise
+
+    @property
+    def _llm_type(self) -> str:
+        return "mistral"
+
+# Initialize the LLM
+llm = MistralLLM()
+
+# Initialize conversation chain
+conversation = ConversationChain(
+    llm=llm,
+    memory=conversation_memory,
+    prompt=PromptTemplate(
+        input_variables=["chat_history", "input"],
+        template=MENTAL_HEALTH_PROMPT
+    ),
+    verbose=True
+)
+
+# Models
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str
+    context: Optional[Dict[str, Any]] = None
+
+class ChatResponse(BaseModel):
+    response: str
+    context: Dict[str, Any]
+    relevant_docs: Optional[List[Dict[str, Any]]] = None
+
+class Document(BaseModel):
+    content: str
+    metadata: Dict[str, Any]
+
+# Helper functions
+def load_pdf_to_chroma(pdf_path: str):
+    """Load PDF content into ChromaDB."""
+    try:
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            for page_num in range(len(reader.pages)):
+                page = reader.pages[page_num]
+                text = page.extract_text()
+                
+                # Split text into chunks
+                chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
+                
+                # Add chunks to ChromaDB
+                for i, chunk in enumerate(chunks):
+                    collection.add(
+                        documents=[chunk],
+                        metadatas=[{
+                            "source": pdf_path,
+                            "page": page_num + 1,
+                            "chunk": i + 1
+                        }],
+                        ids=[f"{pdf_path}_{page_num}_{i}"]
+                    )
+        logger.info(f"Successfully loaded PDF: {pdf_path}")
+    except Exception as e:
+        logger.error(f"Error loading PDF: {str(e)}")
+        raise
+
+async def call_mistral_api(prompt: str, context: Optional[Dict] = None) -> str:
+    """Call Mistral API with context-aware prompting."""
+    try:
+        # Prepare system message
+        system_message = """You are a compassionate and professional mental health chatbot. 
+        Your responses should be empathetic, evidence-based, and focused on the user's specific needs.
+        Always maintain professional boundaries and refer to mental health professionals when appropriate."""
+
+        # Prepare messages
+        messages = [
+            {"role": "system", "content": system_message}
+        ]
+
+        # Add context if available
+        if context:
+            context_message = f"Context: {json.dumps(context, indent=2)}"
+            messages.append({"role": "system", "content": context_message})
+
+        # Add user message
+        messages.append({"role": "user", "content": prompt})
+
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {MISTRAL_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "messages": messages,
+            "model": "mistralai/Mistral-Small-24B-Instruct-2501",
+            "temperature": 0.7,
+            "max_tokens": 1000,
+            "top_p": 0.95
+        }
+
+        # Make API call
+        response = session.post(
+            MISTRAL_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+        else:
+            logger.error(f"API error: {response.text}")
+            raise HTTPException(status_code=500, detail="Error calling Mistral API")
+
+    except Exception as e:
+        logger.error(f"Error in Mistral API call: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_relevant_context(query: str, n_results: int = 3) -> List[Dict]:
+    """Retrieve relevant context from ChromaDB."""
+    try:
+        results = collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        
+        relevant_docs = []
+        for i in range(len(results["documents"][0])):
+            relevant_docs.append({
+                "content": results["documents"][0][i],
+                "metadata": results["metadatas"][0][i]
+            })
+        
+        return relevant_docs
+    except Exception as e:
+        logger.error(f"Error retrieving context: {str(e)}")
+        return []
+
+# Chatbot endpoints
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    """Main chat endpoint with RAG and memory."""
+    try:
+        # Get relevant context from ChromaDB
+        relevant_docs = get_relevant_context(request.message)
+        
+        # Prepare context
+        context = {
+            "timestamp": datetime.now().isoformat(),
+            "user_id": request.user_id,
+            "relevant_documents": relevant_docs,
+            "previous_context": request.context or {}
+        }
+        
+        # Update conversation memory
+        conversation.memory.chat_memory.add_user_message(request.message)
+        
+        # Generate response using Mistral
+        response = await call_mistral_api(
+            prompt=request.message,
+            context=context
+        )
+        
+        # Update conversation memory
+        conversation.memory.chat_memory.add_ai_message(response)
+        
+        # Update context with conversation history
+        context["conversation_history"] = conversation.memory.chat_memory.messages
+        
+        return ChatResponse(
+            response=response,
+            context=context,
+            relevant_docs=relevant_docs
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/load-document")
+async def load_document(document: Document):
+    """Load a document into the knowledge base."""
+    try:
+        # Add document to ChromaDB
+        collection.add(
+            documents=[document.content],
+            metadatas=[document.metadata],
+            ids=[f"doc_{datetime.now().timestamp()}"]
+        )
+        
+        return {"message": "Document loaded successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error loading document: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/load-pdf")
+async def load_pdf(file: UploadFile = File(...)):
+    """Load a PDF file into the knowledge base."""
+    try:
+        # Create a temporary file to store the uploaded PDF
+        temp_file = f"temp_{file.filename}"
+        with open(temp_file, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        # Load the PDF into ChromaDB
+        load_pdf_to_chroma(temp_file)
+        
+        # Clean up the temporary file
+        os.remove(temp_file)
+        
+        return {"message": "PDF loaded successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error loading PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

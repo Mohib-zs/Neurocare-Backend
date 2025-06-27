@@ -11,6 +11,9 @@ import re
 from textblob import TextBlob
 import spacy
 from collections import Counter
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,9 +33,26 @@ try:
     # Load spaCy model for linguistic analysis
     nlp = spacy.load("en_core_web_sm")
     
-    # Mistral API setup
-    MISTRAL_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
-    HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
+    # Together API setup
+    TOGETHER_API_URL = "https://router.huggingface.co/together/v1/chat/completions"
+    TOGETHER_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+    
+    if not TOGETHER_API_KEY:
+        logger.error("HUGGINGFACE_API_KEY environment variable is not set. Please set it with your Together API key.")
+        raise ValueError("HUGGINGFACE_API_KEY environment variable is not set")
+    
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,  # number of retries
+        backoff_factor=1,  # wait 1, 2, 4 seconds between retries
+        status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+    )
+    
+    # Create a session with retry strategy
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
     
     logger.info("All text analysis models initialized successfully")
 except Exception as e:
@@ -133,102 +153,300 @@ def extract_themes_and_concerns(text: str) -> Dict:
         logger.error(f"Error extracting themes: {str(e)}")
         raise
 
+async def call_mistral_api(prompt: str, max_retries: int = 3) -> Optional[Dict]:
+    """Call Together API with retry logic."""
+    if not TOGETHER_API_KEY:
+        logger.error("HUGGINGFACE_API_KEY environment variable is not set")
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {TOGETHER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a mental health assessment AI. You must provide specific numerical scores (0-1) for each mental health metric based on the text analysis. Do not return default or zero values unless absolutely certain there are no indicators."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "model": "mistralai/Mistral-7B-Instruct-v0.2",
+        "temperature": 0.3,  # Lower temperature for more consistent scoring
+        "max_tokens": 1500,
+        "top_p": 0.95,
+        "response_format": { "type": "json_object" }
+    }
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempting API call (attempt {attempt + 1}/{max_retries})")
+            logger.info(f"API URL: {TOGETHER_API_URL}")
+            logger.info(f"Headers: {headers}")
+            logger.info(f"Payload: {json.dumps(payload, indent=2)}")
+            
+            response = session.post(
+                TOGETHER_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            logger.info(f"Response status code: {response.status_code}")
+            logger.info(f"Response headers: {response.headers}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Raw API response: {json.dumps(result, indent=2)}")
+                return result
+            elif response.status_code == 503:
+                # Model is loading, wait and retry
+                wait_time = 20 * (attempt + 1)  # Increase wait time with each retry
+                logger.info(f"Model is loading, waiting {wait_time} seconds...")
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error(f"API error: {response.text}")
+                if attempt < max_retries - 1:
+                    time.sleep(5)  # Wait before retrying
+                    continue
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in API call: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+            return None
+    
+    return None
+
 async def generate_mental_health_assessment(
     sentiment_analysis: Dict,
     linguistic_analysis: Dict,
-    themes_analysis: Dict
+    themes_analysis: Dict,
+    original_text: str
 ) -> Dict:
     """Generate comprehensive mental health assessment using Mistral."""
     try:
         # Prepare context for Mistral
-        context = f"""As a mental health professional, analyze this writing assessment:
+        prompt = f"""Analyze this person's writing and provide a detailed mental health assessment with specific numerical scores.
 
-Sentiment Analysis:
+Original Text:
+"{original_text}"
+
+Analysis Results:
+1. Sentiment Analysis:
 - Overall sentiment: {sentiment_analysis['sentiment']['label']} (confidence: {sentiment_analysis['sentiment']['score']:.2f})
 - Emotional polarity: {sentiment_analysis['sentiment']['polarity']:.2f}
 - Subjectivity: {sentiment_analysis['sentiment']['subjectivity']:.2f}
 - Detected emotions: {sentiment_analysis['emotions']}
 
-Linguistic Patterns:
+2. Writing Style Analysis:
 - Average sentence length: {linguistic_analysis['sentence_analysis']['avg_length']:.1f} words
-- Use of personal pronouns: {linguistic_analysis['linguistic_features']['personal_pronouns']}
+   - Personal pronouns used: {linguistic_analysis['linguistic_features']['personal_pronouns']}
 - Negative expressions: {linguistic_analysis['linguistic_features']['negative_words']}
 - Question marks: {linguistic_analysis['linguistic_features']['question_marks']}
 - Exclamation marks: {linguistic_analysis['linguistic_features']['exclamation_marks']}
 
-Main Concerns:
-{themes_analysis['potential_concerns']}
+3. Identified Themes and Concerns:
+   {json.dumps(themes_analysis['potential_concerns'], indent=2)}
 
-Please provide:
-1. Mental health risk assessment (scale 0-10)
-2. Key areas of concern
-3. Emotional state analysis
-4. Suggested coping strategies
-5. Professional intervention recommendations
-6. Immediate support suggestions
+Based on the above analysis, provide a detailed mental health assessment in JSON format. You MUST provide specific numerical scores (0-1) for each metric based on the text analysis. Do not return default or zero values unless absolutely certain there are no indicators.
 
-Format the response as a structured JSON with these categories."""
+Required fields with scoring guidelines:
+1. Core Mental Health Scores (0-1 scale, where 0 is optimal and 1 is severe):
+   - depression_score: Based on expressions of sadness, hopelessness, lack of interest
+   - anxiety_score: Based on expressions of worry, fear, racing thoughts
+   - stress_score: Based on expressions of pressure, overwhelm, tension
+   - sleep_quality_score: Based on mentions of sleep issues, fatigue, restlessness
+   - emotional_regulation: Based on ability to manage emotions, mood stability
+   - social_connection: Based on social engagement, relationships, isolation
+   - resilience_score: Based on coping ability, adaptability, recovery
+   - mindfulness_score: Based on present-moment awareness, clarity of thought
 
-        # Call Mistral API
-        headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.post(
-            MISTRAL_API_URL,
-            headers=headers,
-            json={"inputs": context}
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Mistral API error: {response.text}")
+2. Risk Assessment:
+   - suicide_risk: 0-1 scale based on expressions of hopelessness, worthlessness
+   - self_harm_risk: 0-1 scale based on expressions of self-harm ideation
+   - risk_factors: List of specific risk factors identified
+   - protective_factors: List of protective factors identified
+
+3. Treatment and Progress:
+   - treatment_adherence: 0-1 scale based on engagement with treatment
+   - medication_compliance: 0-1 scale based on medication management
+   - therapy_attendance: 0-1 scale based on therapy engagement
+
+4. Detailed Analysis:
+   - emotional_state: {
+       "primary_emotion": string,
+       "intensity": float (0-1),
+       "stability": string ("stable", "moderate", "unstable")
+   }
+   - key_concerns: List of specific concerns identified
+   - coping_mechanisms: List of current coping strategies
+   - support_needs: List of support requirements
+   - immediate_recommendations: List of urgent actions needed
+
+5. Additional Metrics:
+   - cognitive_function: {
+       "clarity": float (0-1),
+       "concentration": float (0-1),
+       "memory": float (0-1)
+   }
+   - activity_level: float (0-1) based on energy and engagement
+   - social_engagement: float (0-1) based on social interaction
+   - sleep_patterns: {
+       "quality": float (0-1),
+       "consistency": float (0-1),
+       "disturbances": List[string]
+   }
+
+Return ONLY the JSON object with these fields, nothing else. You MUST provide specific numerical scores based on the text analysis. Do not return default or zero values unless absolutely certain there are no indicators."""
+
+        # Call Together API with retry logic
+        result = await call_mistral_api(prompt)
+        if not result:
+            logger.error("Failed to get response from Together API after retries")
             return generate_default_assessment(sentiment_analysis, themes_analysis)
 
         # Parse response
         try:
-            result = response.json()
-            if isinstance(result, list):
-                result = result[0]
+            # Extract the message content from the response
+            response_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            logger.info(f"Generated text: {response_text}")
             
-            assessment = json.loads(result)
-            return assessment
-        except json.JSONDecodeError:
-            logger.error("Failed to parse Mistral response")
+            # Try to find JSON object in the response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    assessment = json.loads(json_match.group())
+                    logger.info(f"Parsed assessment: {json.dumps(assessment, indent=2)}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON from response: {str(e)}")
+                    logger.error(f"JSON content: {json_match.group()}")
+                    return generate_default_assessment(sentiment_analysis, themes_analysis)
+                
+                # Create the assessment structure matching the database schema
+                final_assessment = {
+                    "depression_score": float(assessment.get("depression_score", 0.0)),
+                    "anxiety_score": float(assessment.get("anxiety_score", 0.0)),
+                    "stress_score": float(assessment.get("stress_score", 0.0)),
+                    "sleep_quality_score": float(assessment.get("sleep_quality_score", 0.0)),
+                    "emotional_regulation": float(assessment.get("emotional_regulation", 0.0)),
+                    "social_connection": float(assessment.get("social_connection", 0.0)),
+                    "resilience_score": float(assessment.get("resilience_score", 0.0)),
+                    "mindfulness_score": float(assessment.get("mindfulness_score", 0.0)),
+                    "cognitive_metrics": assessment.get("cognitive_function", {
+                        "clarity": 0.0,
+                        "concentration": 0.0,
+                        "memory": 0.0
+                    }),
+                    "activity_data": {
+                        "level": float(assessment.get("activity_level", 0.0))
+                    },
+                    "social_data": {
+                        "engagement": float(assessment.get("social_engagement", 0.0))
+                    },
+                    "sleep_data": assessment.get("sleep_patterns", {
+                        "quality": 0.0,
+                        "consistency": 0.0,
+                        "disturbances": []
+                    }),
+                    "risk_factors": assessment.get("risk_factors", []),
+                    "cognitive_function": {
+                        "clarity": float(assessment.get("cognitive_function", {}).get("clarity", 0.0)),
+                        "concentration": float(assessment.get("cognitive_function", {}).get("concentration", 0.0)),
+                        "memory": float(assessment.get("cognitive_function", {}).get("memory", 0.0))
+                    },
+                    "activity_level": float(assessment.get("activity_level", 0.0)),
+                    "social_engagement": float(assessment.get("social_engagement", 0.0)),
+                    "sleep_patterns": assessment.get("sleep_patterns", {
+                        "quality": 0.0,
+                        "consistency": 0.0,
+                        "disturbances": []
+                    }),
+                    "suicide_risk": float(assessment.get("suicide_risk", 0.0)),
+                    "self_harm_risk": float(assessment.get("self_harm_risk", 0.0)),
+                    "protective_factors": assessment.get("protective_factors", []),
+                    "treatment_adherence": float(assessment.get("treatment_adherence", 0.0)),
+                    "medication_compliance": float(assessment.get("medication_compliance", 0.0)),
+                    "therapy_attendance": float(assessment.get("therapy_attendance", 0.0)),
+                    "progress_metrics": {},
+                    "ai_insights": {
+                        "emotional_state": {
+                            "primary_emotion": sentiment_analysis["emotions"]["label"],
+                            "intensity": float(sentiment_analysis["emotions"]["score"]),
+                            "stability": "moderate"
+                        },
+                        "key_concerns": assessment.get("key_concerns", []),
+                        "coping_mechanisms": assessment.get("coping_mechanisms", []),
+                        "support_needs": assessment.get("support_needs", []),
+                        "immediate_recommendations": assessment.get("immediate_recommendations", ["Please contact a mental health professional for support"])
+                    }
+                }
+                
+                # Log the final assessment
+                logger.info(f"Final assessment with calculated scores: {json.dumps(final_assessment, indent=2)}")
+                return final_assessment
+            else:
+                logger.error("No JSON object found in response")
+                logger.error(f"Full response text: {response_text}")
+                return generate_default_assessment(sentiment_analysis, themes_analysis)
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse API response: {str(e)}")
+            logger.error(f"Response content: {response_text}")
             return generate_default_assessment(sentiment_analysis, themes_analysis)
             
     except Exception as e:
         logger.error(f"Error generating assessment: {str(e)}")
+        logger.error(f"Full error details: {e.__dict__}")
         return generate_default_assessment(sentiment_analysis, themes_analysis)
 
 def generate_default_assessment(sentiment_analysis: Dict, themes_analysis: Dict) -> Dict:
-    """Generate default assessment when Mistral API fails."""
+    """Generate default assessment when Together API fails."""
+    logger.warning("Using default assessment due to API failure")
     return {
-        "risk_level": calculate_risk_level(sentiment_analysis, themes_analysis),
-        "areas_of_concern": list(themes_analysis["potential_concerns"].keys()),
+        "depression_score": 0.0,
+        "anxiety_score": 0.0,
+        "stress_score": 0.0,
+        "sleep_quality_score": 0.0,
+        "emotional_regulation": 0.0,
+        "social_connection": 0.0,
+        "resilience_score": 0.0,
+        "mindfulness_score": 0.0,
+        "suicide_risk": 0.0,
+        "self_harm_risk": 0.0,
+        "risk_factors": [],
+        "protective_factors": [],
+        "treatment_adherence": 0.0,
+        "medication_compliance": 0.0,
+        "therapy_attendance": 0.0,
+        "cognitive_function": {
+            "clarity": 0.0,
+            "concentration": 0.0,
+            "memory": 0.0
+        },
+        "activity_level": 0.0,
+        "social_engagement": 0.0,
+        "sleep_patterns": {
+            "quality": 0.0,
+            "consistency": 0.0,
+            "disturbances": []
+        },
         "emotional_state": {
             "primary_emotion": sentiment_analysis["emotions"]["label"],
             "intensity": sentiment_analysis["emotions"]["score"],
             "stability": "moderate"
         },
-        "coping_strategies": [
-            "Practice deep breathing exercises",
-            "Write in a journal regularly",
-            "Engage in physical activity",
-            "Maintain a regular sleep schedule",
-            "Connect with supportive friends or family"
-        ],
-        "professional_help": {
-            "recommended": sentiment_analysis["sentiment"]["polarity"] < -0.3,
-            "type": ["Counseling", "Therapy"],
-            "urgency": "moderate"
-        },
-        "immediate_support": [
-            "Call a trusted friend or family member",
-            "Use relaxation techniques",
-            "Focus on present moment awareness",
-            "Practice self-care activities"
-        ]
+        "key_concerns": list(themes_analysis["potential_concerns"].keys()),
+        "coping_mechanisms": [],
+        "support_needs": [],
+        "immediate_recommendations": ["Please contact a mental health professional for support"]
     }
 
 def calculate_risk_level(sentiment_analysis: Dict, themes_analysis: Dict) -> int:
@@ -247,92 +465,94 @@ def calculate_risk_level(sentiment_analysis: Dict, themes_analysis: Dict) -> int
     # Cap the risk score at 10
     return min(int(risk_score), 10)
 
-async def generate_personalized_interventions(assessment: Dict) -> Dict:
-    """Generate personalized interventions based on assessment."""
+async def generate_personalized_interventions(assessment: Dict, original_text: str) -> List[Dict]:
+    """Generate personalized interventions using Mistral AI based on the user's text and assessment."""
     try:
+        # Verify API token
+        if not TOGETHER_API_KEY:
+            logger.error("TOGETHER_API_KEY is not set")
+            raise ValueError("TOGETHER_API_KEY is not set")
+
         # Prepare context for Mistral
-        context = f"""Based on this mental health assessment:
-Risk Level: {assessment['risk_level']}/10
-Primary Emotion: {assessment['emotional_state']['primary_emotion']}
-Main Concerns: {', '.join(assessment['areas_of_concern'])}
+        prompt = f"""You are a mental health professional. Based on this person's writing and assessment, generate personalized interventions.
 
-Generate personalized interventions including:
-1. Daily practices (5 specific activities)
-2. Weekly goals (3 achievable goals)
-3. Crisis management plan
-4. Self-reflection prompts
-5. Progress tracking metrics
+Original Text:
+"{original_text}"
 
-Format as JSON with these categories."""
+Assessment Summary:
+- Depression Score: {assessment.get('depression_score', 0)}
+- Anxiety Score: {assessment.get('anxiety_score', 0)}
+- Stress Score: {assessment.get('stress_score', 0)}
+- Sleep Quality: {assessment.get('sleep_quality_score', 0)}
+- Emotional State: {json.dumps(assessment.get('emotional_state', {}), indent=2)}
+- Key Concerns: {json.dumps(assessment.get('key_concerns', []), indent=2)}
+- Risk Factors: {json.dumps(assessment.get('risk_factors', []), indent=2)}
+- Protective Factors: {json.dumps(assessment.get('protective_factors', []), indent=2)}
 
-        # Call Mistral API
-        headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.post(
-            MISTRAL_API_URL,
-            headers=headers,
-            json={"inputs": context}
-        )
-        
-        if response.status_code != 200:
+Generate a list of 3-5 personalized interventions in JSON format. Each intervention should be a JSON object with these fields:
+- type: string (category of intervention)
+- description: string (detailed intervention description)
+- duration: string (how long to practice)
+- frequency: string (how often to practice)
+- expected_outcome: string (what to expect)
+- rationale: string (why this intervention is recommended for their specific situation)
+
+Focus on evidence-based interventions that directly address their expressed concerns and needs. Be specific and reference details from their writing.
+
+Return ONLY the JSON array of interventions, nothing else."""
+
+        # Call Together API
+        result = await call_mistral_api(prompt)
+        if not result:
+            logger.error("Failed to get response from Together API")
             return generate_default_interventions(assessment)
 
         # Parse response
         try:
-            result = response.json()
-            if isinstance(result, list):
-                result = result[0]
+            # Extract the message content from the response
+            response_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            logger.info(f"Generated text: {response_text}")
             
-            interventions = json.loads(result)
-            return interventions
-        except json.JSONDecodeError:
+            # Try to find JSON array in the response
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                interventions = json.loads(json_match.group())
+                logger.info(f"Parsed interventions: {json.dumps(interventions, indent=2)}")
+                
+                # Validate intervention structure
+                for intervention in interventions:
+                    intervention.setdefault("type", "general")
+                    intervention.setdefault("description", "Please consult with a mental health professional")
+                    intervention.setdefault("duration", "as needed")
+                    intervention.setdefault("frequency", "as needed")
+                    intervention.setdefault("expected_outcome", "Improved mental wellbeing")
+                    intervention.setdefault("rationale", "Based on assessment")
+                return interventions
+                
+            if not json_match:
+                logger.error("No JSON array found in response")
+                logger.error(f"Full response text: {response_text}")
+                return generate_default_interventions(assessment)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse API response: {str(e)}")
+            logger.error(f"Response content: {response_text}")
             return generate_default_interventions(assessment)
             
     except Exception as e:
         logger.error(f"Error generating interventions: {str(e)}")
+        logger.error(f"Full error details: {e.__dict__}")
         return generate_default_interventions(assessment)
 
-def generate_default_interventions(assessment: Dict) -> Dict:
-    """Generate default interventions when Mistral API fails."""
-    return {
-        "daily_practices": [
-            "Morning meditation (5-10 minutes)",
-            "Gratitude journaling",
-            "Physical exercise (30 minutes)",
-            "Mindful breathing exercises",
-            "Evening reflection"
-        ],
-        "weekly_goals": [
-            "Connect with at least two supportive people",
-            "Complete three self-care activities",
-            "Practice a new coping skill"
-        ],
-        "crisis_plan": {
-            "immediate_steps": [
-                "Use grounding techniques",
-                "Contact support person",
-                "Practice deep breathing"
-            ],
-            "emergency_contacts": [
-                "Therapist/Counselor",
-                "Crisis Hotline",
-                "Trusted Friend/Family"
-            ]
-        },
-        "reflection_prompts": [
-            "What triggered my emotions today?",
-            "What coping strategies worked well?",
-            "What am I grateful for today?",
-            "How did I show self-compassion?"
-        ],
-        "progress_metrics": [
-            "Daily mood rating",
-            "Sleep quality",
-            "Anxiety level",
-            "Social connection",
-            "Coping skill usage"
-        ]
-    } 
+def generate_default_interventions(assessment: Dict) -> List[Dict]:
+    """Generate default interventions when Together API fails."""
+    logger.warning("Using default interventions due to API failure")
+    return [
+        {
+            "type": "emergency_support",
+            "description": "Please contact a mental health professional immediately for support",
+            "duration": "immediate",
+            "frequency": "as needed",
+            "expected_outcome": "Professional support and guidance",
+            "rationale": "Based on the assessment indicating need for professional support"
+        }
+    ] 

@@ -12,6 +12,8 @@ from scipy.stats import zscore
 import requests
 from dotenv import load_dotenv
 import re
+from huggingface_hub import InferenceClient
+import subprocess
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -164,7 +166,7 @@ def transcribe_and_analyze_speech(audio_path: str) -> Dict:
             "word_per_minute": float(word_per_minute)
         }
     except Exception as e:
-        logger.error(f"Error in speech analysis: {str(e)}")
+        logger.error(f"Error in speech analysis: {type(e).__name__}: {str(e)}")
         raise
 
 def assess_mental_state(
@@ -240,7 +242,7 @@ def assess_mental_state(
         raise
 
 def generate_mental_health_scores(mental_state: Dict) -> Dict:
-    """Generate detailed mental health scores using Mistral."""
+    """Generate detailed mental health scores using Mistral via Hugging Face InferenceClient."""
     try:
         prompt = f"""As a mental health professional, analyze these indicators and provide detailed mental health scores:
 
@@ -269,23 +271,23 @@ Please provide numerical scores (0-1) for:
 
 Also provide a brief explanation for each score."""
 
-        # Call Mistral API
-        headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        response = requests.post(
-            MISTRAL_API_URL,
-            headers=headers,
-            json={"inputs": prompt}
+        client = InferenceClient(
+            provider="novita",
+            api_key=os.environ["HF_TOKEN"],
         )
-        response.raise_for_status()
-        
-        # Parse response and extract scores
-        result = response.json()[0]["generated_text"]
+
+        completion = client.chat.completions.create(
+            model="mistralai/Mistral-7B-Instruct-v0.3",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+        )
+
+        result = completion.choices[0].message.content
         scores = {}
-        
-        # Parse the scores from the response
         score_mapping = {
             "anxiety": "anxiety_score",
             "depression": "depression_score",
@@ -298,7 +300,6 @@ Also provide a brief explanation for each score."""
             "resilience": "resilience",
             "life satisfaction": "life_satisfaction"
         }
-        
         for line in result.split("\n"):
             for key, score_key in score_mapping.items():
                 if key.lower() in line.lower():
@@ -307,9 +308,7 @@ Also provide a brief explanation for each score."""
                         scores[score_key] = min(max(score, 0), 1)  # Ensure score is between 0 and 1
                     except:
                         continue
-        
         return scores
-        
     except Exception as e:
         logger.error(f"Error generating mental health scores: {str(e)}")
         return {
@@ -409,4 +408,11 @@ def generate_default_recommendations(mental_state: Dict) -> Tuple[List[str], Lis
         "Would you like to talk more about what's on your mind?"
     ]
     
-    return recommendations, follow_up_questions 
+    return recommendations, follow_up_questions
+
+def convert_to_wav(input_path, output_path):
+    """Convert an audio file (e.g., MP3) to PCM WAV using ffmpeg."""
+    subprocess.run([
+        "ffmpeg", "-y", "-i", input_path,
+        "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", output_path
+    ], check=True) 

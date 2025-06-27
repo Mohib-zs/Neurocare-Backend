@@ -363,28 +363,46 @@ class MentalHealthAssessmentBase(BaseModel):
 class MentalHealthAssessmentCreate(MentalHealthAssessmentBase):
     pass
 
-class MentalHealthAssessmentResponse(MentalHealthAssessmentBase):
+class MentalHealthAssessmentResponse(BaseModel):
     id: int
     user_id: int
     timestamp: datetime
-    cognitive_function: Dict[str, Any]
-    activity_level: float
-    social_engagement: float
-    sleep_patterns: Dict[str, Any]
-    suicide_risk: float
-    self_harm_risk: float
-    risk_factors: List[str]
-    protective_factors: List[str]
-    treatment_adherence: float
-    medication_compliance: float
-    therapy_attendance: float
-    progress_metrics: Dict[str, Any]
-    ai_insights: Dict[str, Any]
-    recommended_interventions: List[Dict[str, Any]]
-    predicted_outcomes: Dict[str, Any]
+    depression_score: float
+    anxiety_score: float
+    stress_score: float
+    sleep_quality_score: float
+    emotional_regulation: float
+    social_connection: float
+    resilience_score: float
+    mindfulness_score: float
+    cognitive_metrics: Dict = {}
+    activity_data: Dict = {}
+    social_data: Dict = {}
+    sleep_data: Dict = {}
+    risk_factors: List[str] = []
+    cognitive_function: Dict = {}
+    activity_level: float = 0.0
+    social_engagement: float = 0.0
+    sleep_patterns: Dict = {}
+    suicide_risk: float = 0.0
+    self_harm_risk: float = 0.0
+    protective_factors: List[str] = []
+    treatment_adherence: float = 0.0
+    medication_compliance: float = 0.0
+    therapy_attendance: float = 0.0
+    progress_metrics: Dict = {}
+    ai_insights: Dict = {
+        "emotional_state": {},
+        "key_concerns": [],
+        "coping_mechanisms": [],
+        "support_needs": [],
+        "immediate_recommendations": []
+    }
+    recommended_interventions: List[Dict] = []
+    predicted_outcomes: Dict = {}
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class MentalHealthInterventionBase(BaseModel):
     intervention_type: str
